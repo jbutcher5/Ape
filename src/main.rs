@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 
@@ -120,12 +121,16 @@ impl Parser {
 
 struct Generator {
     file: File,
+    rbp_offset: u32,
+    variables: HashMap<String, u32>,
 }
 
 impl Generator {
     fn new(file_path: &str) -> io::Result<Self> {
         Ok(Generator {
             file: File::create(file_path)?,
+            rbp_offset: 0,
+            variables: HashMap::new(),
         })
     }
 
@@ -138,7 +143,7 @@ impl Generator {
 
     fn footer(&mut self) -> io::Result<()> {
         emit!(self, "mov rax, 60\n");
-        emit!(self, "pop rdi\n");
+        emit!(self, "mov rdi, [rsp-4]\n");
         emit!(self, "syscall\n");
         Ok(())
     }
@@ -152,22 +157,46 @@ impl Generator {
                 Ok(())
             }
             Call(call) => {
-                let ident = call.first().unwrap();
+                let ident = call.first().expect("Empty call");
 
-                for x in &call[1..call.len()] {
-                    self.generate(x.clone())?;
-                }
-
-                if let Node::Ident(name) = ident {
+                if let Ident(name) = ident {
                     match name.as_str() {
                         "+" => {
+                            for x in &call[1..call.len()] {
+                                self.generate(x.clone())?;
+                            }
+
                             emit!(self, "pop rax\n");
                             emit!(self, "pop rbx\n");
                             emit!(self, "add rax, rbx\n");
                             emit!(self, "push rax\n");
                         }
+                        "define" => {
+                            self.rbp_offset += 4;
+                            let symbol = match call.get(1) {
+                                Some(Ident(s)) => s,
+                                Some(x) => panic!("{:?} is not a valid symbol", x),
+                                _ => panic!("define requires 2 parameters"),
+                            };
+                            if let Some(x) = self.variables.get(symbol) {
+                                panic!("{symbol} is already defined at rbp-{x}");
+                            } else {
+                                self.variables.insert(symbol.to_string(), self.rbp_offset);
+                            }
+
+                            if let Some(x) = call.get(2) {
+                                self.generate(x.clone())?;
+                            } else {
+                                panic!("define requires 2 parameters");
+                            }
+
+                            emit!(self, "pop rax\n");
+                            emit!(self, "mov [rbp-{}], rax\n", self.rbp_offset);
+                        }
                         x => println!("Unknown symbol {}", x),
                     }
+                } else {
+                    panic!("The first item in the call is not a function")
                 }
                 Ok(())
             }
