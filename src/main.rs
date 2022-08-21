@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 
-macro_rules! emit {
+macro_rules! appendln {
     ($self:ident, $($arg:tt)*) => {{
-        $self.file.write_all(format!($($arg)*).as_bytes())?
+        $self.appendln(format!($($arg)*).as_bytes())
     }}
 }
 
@@ -37,16 +37,17 @@ impl Parser {
         result
     }
 
-    fn parse_toplevel(&mut self) -> Option<Node> {
-        let result = self.parse();
-        self.skip_whitespace();
+    fn parse_toplevel(&mut self) -> Option<Vec<Node>> {
+        let mut result: Vec<Node> = vec![];
 
-        if self.index < self.data.len() {
-            println!("Expected EOF after top level");
-            return None;
+        while self.index < self.data.len() {
+            let node = self.parse()?;
+            self.skip_whitespace();
+
+            result.push(node);
         }
 
-        result
+        Some(result)
     }
 
     fn skip_whitespace(&mut self) {
@@ -83,7 +84,7 @@ impl Parser {
         let start = self.index;
 
         while let Some(c) = self.get_index() {
-            if c.is_ascii_whitespace() {
+            if c.is_ascii_whitespace() || *c == b'(' || *c == b')' {
                 break;
             } else {
                 self.inc();
@@ -106,12 +107,7 @@ impl Parser {
                 break;
             }
 
-            if let Some(x) = self.parse() {
-                acc.push(x);
-            } else {
-                return None;
-            }
-
+            acc.push(self.parse()?);
             self.skip_whitespace();
         }
 
@@ -123,6 +119,7 @@ struct Generator {
     file: File,
     rbp_offset: u32,
     variables: HashMap<String, u32>,
+    assembly: Vec<u8>,
 }
 
 impl Generator {
@@ -131,48 +128,52 @@ impl Generator {
             file: File::create(file_path)?,
             rbp_offset: 0,
             variables: HashMap::new(),
+            assembly: vec![],
         })
     }
 
-    fn header(&mut self) -> io::Result<()> {
-        emit!(self, "section .text\n");
-        emit!(self, "global _start\n");
-        emit!(self, "_start:\n");
-        Ok(())
+    fn header(&mut self) {
+        self.appendln(include_bytes!("header.asm"))
     }
 
-    fn footer(&mut self) -> io::Result<()> {
-        emit!(self, "mov rax, 60\n");
-        emit!(self, "mov rdi, [rsp-4]\n");
-        emit!(self, "syscall\n");
-        Ok(())
+    fn footer(&mut self) {
+        appendln!(self, "mov rax, 60");
+        appendln!(self, "pop rdi");
+        appendln!(self, "syscall");
     }
 
-    fn generate(&mut self, node: Node) -> io::Result<()> {
+    fn generate(&mut self, node: Node) {
         use Node::*;
 
         match node {
             Int(x) => {
-                emit!(self, "mov rax, {}\npush rax\n", x);
-                Ok(())
+                appendln!(self, "mov rax, {}", x);
+                appendln!(self, "push rax");
             }
             Call(call) => {
                 let ident = call.first().expect("Empty call");
 
                 if let Ident(name) = ident {
                     match name.as_str() {
+                        "display" => {
+                            for x in &call[1..call.len()] {
+                                self.generate(x.clone());
+                                appendln!(self, "pop rdi");
+                                appendln!(self, "call func_print");
+                            }
+                        }
                         "+" => {
                             for x in &call[1..call.len()] {
-                                self.generate(x.clone())?;
+                                self.generate(x.clone());
                             }
 
-                            emit!(self, "pop rax\n");
-                            emit!(self, "pop rbx\n");
-                            emit!(self, "add rax, rbx\n");
-                            emit!(self, "push rax\n");
+                            appendln!(self, "pop rax");
+                            appendln!(self, "pop rbx");
+                            appendln!(self, "add rax, rbx");
+                            appendln!(self, "push rax");
                         }
                         "define" => {
-                            self.rbp_offset += 4;
+                            self.rbp_offset += 8;
                             let symbol = match call.get(1) {
                                 Some(Ident(s)) => s,
                                 Some(x) => panic!("{:?} is not a valid symbol", x),
@@ -185,23 +186,46 @@ impl Generator {
                             }
 
                             if let Some(x) = call.get(2) {
-                                self.generate(x.clone())?;
+                                self.generate(x.clone());
                             } else {
                                 panic!("define requires 2 parameters");
                             }
 
-                            emit!(self, "pop rax\n");
-                            emit!(self, "mov [rbp-{}], rax\n", self.rbp_offset);
+                            appendln!(self, "pop rax");
+                            appendln!(self, "mov [rbp-{}], rax", self.rbp_offset);
                         }
                         x => println!("Unknown symbol {}", x),
                     }
                 } else {
                     panic!("The first item in the call is not a function")
                 }
-                Ok(())
             }
-            _ => Ok(()),
+            Ident(ident) => {
+                appendln!(
+                    self,
+                    "mov rax, [rbp-{}]",
+                    self.variables.get(&ident).unwrap()
+                );
+                appendln!(self, "push rax");
+            }
+            _ => panic!("Lmao wtf bro your code is shit"),
         }
+    }
+
+    fn generate_toplevel(&mut self, nodes: Vec<Node>) {
+        for node in nodes {
+            self.generate(node);
+            appendln!(self, "\n");
+        }
+    }
+
+    fn appendln(&mut self, code: &[u8]) {
+        self.assembly.push(b'\n');
+        self.assembly.extend(code);
+    }
+
+    fn write(&mut self) -> io::Result<()> {
+        self.file.write_all(&self.assembly)
     }
 }
 
@@ -214,9 +238,10 @@ fn main() -> io::Result<()> {
     let result = parser.parse_toplevel();
     let mut generator = Generator::new("out.asm")?;
 
-    generator.header()?;
-    generator.generate(result.unwrap())?;
-    generator.footer()?;
+    generator.header();
+    generator.generate_toplevel(result.unwrap());
+    generator.footer();
+    generator.write()?;
 
     Ok(())
 }
