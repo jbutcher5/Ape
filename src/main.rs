@@ -1,12 +1,12 @@
+#![feature(iter_intersperse)]
+
+mod asm;
+
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Write};
 
-macro_rules! appendln {
-    ($self:ident, $($arg:tt)*) => {{
-        $self.appendln(format!($($arg)*).as_bytes())
-    }}
-}
+use asm::{DefineBytes, Instr, Instr::*, Program, Register::*, Scope};
 
 #[derive(Debug, Clone)]
 enum Node {
@@ -117,29 +117,29 @@ impl Parser {
 
 struct Generator {
     file: File,
-    rbp_offset: u32,
-    variables: HashMap<String, u32>,
-    assembly: Vec<u8>,
+    variables: HashMap<String, u64>,
+    scopes: Vec<Scope>,
+    data: Vec<DefineBytes>,
+    i: usize,
 }
 
 impl Generator {
     fn new(file_path: &str) -> io::Result<Self> {
         Ok(Generator {
             file: File::create(file_path)?,
-            rbp_offset: 0,
             variables: HashMap::new(),
-            assembly: vec![],
+            scopes: vec![Scope {
+                name: "main".to_string(),
+                used_bytes: 0,
+                instructions: vec![],
+            }],
+            data: vec![],
+            i: 0,
         })
     }
 
-    fn header(&mut self) {
-        self.appendln(include_bytes!("header.asm"))
-    }
-
-    fn footer(&mut self) {
-        appendln!(self, "mov rax, 60");
-        appendln!(self, "pop rdi");
-        appendln!(self, "syscall");
+    fn scope(&mut self) -> &mut Scope {
+        &mut self.scopes[self.i]
     }
 
     fn generate(&mut self, node: Node) {
@@ -147,33 +147,23 @@ impl Generator {
 
         match node {
             Int(x) => {
-                appendln!(self, "mov rax, {}", x);
-                appendln!(self, "push rax");
+                self.append(vec![Pushl(x)]);
             }
             Call(call) => {
                 let ident = call.first().expect("Empty call");
 
                 if let Ident(name) = ident {
                     match name.as_str() {
-                        "display" => {
-                            for x in &call[1..call.len()] {
-                                self.generate(x.clone());
-                                appendln!(self, "pop rdi");
-                                appendln!(self, "call func_print");
-                            }
-                        }
                         "+" => {
                             for x in &call[1..call.len()] {
                                 self.generate(x.clone());
                             }
 
-                            appendln!(self, "pop rax");
-                            appendln!(self, "pop rbx");
-                            appendln!(self, "add rax, rbx");
-                            appendln!(self, "push rax");
+                            self.append(vec![Pop(RAX), Pop(RBX), Add(RAX, RBX), Push(RAX)]);
                         }
                         "define" => {
-                            self.rbp_offset += 8;
+                            let location = self.scope().res_bytes_loc(4);
+
                             let symbol = match call.get(1) {
                                 Some(Ident(s)) => s,
                                 Some(x) => panic!("{:?} is not a valid symbol", x),
@@ -182,7 +172,7 @@ impl Generator {
                             if let Some(x) = self.variables.get(symbol) {
                                 panic!("{symbol} is already defined at rbp-{x}");
                             } else {
-                                self.variables.insert(symbol.to_string(), self.rbp_offset);
+                                self.variables.insert(symbol.to_string(), location);
                             }
 
                             if let Some(x) = call.get(2) {
@@ -191,8 +181,7 @@ impl Generator {
                                 panic!("define requires 2 parameters");
                             }
 
-                            appendln!(self, "pop rax");
-                            appendln!(self, "mov [rbp-{}], rax", self.rbp_offset);
+                            self.append(vec![Pop(RAX), Mov(Stack(location), RAX)]);
                         }
                         x => println!("Unknown symbol {}", x),
                     }
@@ -201,31 +190,41 @@ impl Generator {
                 }
             }
             Ident(ident) => {
-                appendln!(
-                    self,
-                    "mov rax, [rbp-{}]",
-                    self.variables.get(&ident).unwrap()
-                );
-                appendln!(self, "push rax");
+                self.append(vec![
+                    Mov(RAX, Stack(*self.variables.get(&ident).unwrap())),
+                    Push(RAX),
+                ]);
             }
             _ => panic!("Lmao wtf bro your code is shit"),
         }
     }
 
+    fn open_scope(&mut self, name: &str) {
+        self.i += 1;
+        self.scopes.push(Scope {
+            name: name.to_string(),
+            used_bytes: 0,
+            instructions: vec![],
+        });
+    }
+
+    fn append(&mut self, instructions: Vec<Instr>) {
+        self.scopes[self.i].append(instructions)
+    }
+
     fn generate_toplevel(&mut self, nodes: Vec<Node>) {
         for node in nodes {
             self.generate(node);
-            appendln!(self, "\n");
         }
     }
 
-    fn appendln(&mut self, code: &[u8]) {
-        self.assembly.push(b'\n');
-        self.assembly.extend(code);
-    }
-
     fn write(&mut self) -> io::Result<()> {
-        self.file.write_all(&self.assembly)
+        let program = Program {
+            text: self.scopes.clone(),
+            data: self.data.clone(),
+        };
+
+        self.file.write_all(&program.encode())
     }
 }
 
@@ -238,9 +237,7 @@ fn main() -> io::Result<()> {
     let result = parser.parse_toplevel();
     let mut generator = Generator::new("out.asm")?;
 
-    generator.header();
     generator.generate_toplevel(result.unwrap());
-    generator.footer();
     generator.write()?;
 
     Ok(())

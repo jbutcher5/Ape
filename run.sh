@@ -2,8 +2,8 @@
 
 set -xe
 cargo run
-yasm out.asm -f elf64 -g dwarf2
-ld out.o
+nasm out.asm -f elf64
+gcc out.o -no-pie
 ./a.out
 echo "EXIT CODE:"
 echo $?
