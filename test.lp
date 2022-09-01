@@ -1,2 +1,6 @@
-(define x 5)
-(+ x 5)
+(define x 6)
+5
+(display (+ x 5))
+(display (+ x 5))
+(display x)
+(display 5)

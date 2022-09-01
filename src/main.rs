@@ -162,7 +162,7 @@ impl Generator {
                             if let Some(x) = self.variables.get(symbol) {
                                 panic!("{symbol} is already defined at rbp-{x}");
                             } else {
-                                self.scopes[self.i].new_var(symbol.to_string(), 4);
+                                self.scopes[self.i].new_var(symbol.to_string(), 8);
                             }
 
                             if let Some(x) = call.get(2) {
@@ -175,6 +175,13 @@ impl Generator {
                                 Pop(RAX),
                                 Mov(self.scopes[self.i].get_var(symbol).unwrap(), RAX),
                             ]);
+                        }
+                        "display" => {
+                            for x in &call[1..call.len()] {
+                                self.generate(x.clone());
+                            }
+
+                            self.append(vec![Pop(RDI), Instr::Call("print_value".to_string())]);
                         }
                         x => println!("Unknown symbol {}", x),
                     }
@@ -214,7 +221,10 @@ impl Generator {
     fn write(&mut self) -> io::Result<()> {
         let program = Program {
             text: self.scopes.clone(),
-            data: self.data.clone(),
+            data: vec![DefineBytes {
+                name: "as_int".to_string(),
+                value: "`%d\\n`".to_string(),
+            }],
         };
 
         self.file.write_all(&program.encode())

@@ -114,7 +114,7 @@ impl ToString for Instr {
 
 impl ToString for DefineBytes {
     fn to_string(&self) -> String {
-        format!("{}:  db `{}`", self.name, self.value)
+        format!("{}:  db {}", self.name, self.value)
     }
 }
 
@@ -141,7 +141,7 @@ impl ToString for Scope {
             vec![Pop(RBP), Return]
         };
 
-        let body: Vec<Instr> = vec![header, (*self.instructions).to_vec(), footer].concat();
+        let body: Vec<Instr> = vec![header, self.instructions.clone(), footer].concat();
 
         [
             format!("{}:\n", self.name),
