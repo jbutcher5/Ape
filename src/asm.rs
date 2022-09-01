@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[inline]
 fn next_multiple(start: u64, n: u64) -> u64 {
     (start as f64 / n as f64).ceil() as u64 * n
@@ -46,6 +48,7 @@ pub struct Scope {
     pub name: String,
     pub used_bytes: u64,
     pub instructions: Vec<Instr>,
+    pub vars: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,8 +154,26 @@ impl ToString for Scope {
 }
 
 impl Scope {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            used_bytes: 0,
+            instructions: vec![],
+            vars: HashMap::new(),
+        }
+    }
+
     pub fn append(&mut self, instructions: Vec<Instr>) {
         self.instructions.extend(instructions);
+    }
+
+    pub fn new_var(&mut self, name: String, bytes: u64) {
+        self.used_bytes += bytes;
+        self.vars.insert(name, self.used_bytes);
+    }
+
+    pub fn get_var(&self, name: &String) -> Option<Register> {
+        Some(Register::Stack(*self.vars.get(name)?))
     }
 
     pub fn res_bytes(&mut self, bytes: u64) {

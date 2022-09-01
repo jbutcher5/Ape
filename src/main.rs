@@ -128,18 +128,10 @@ impl Generator {
         Ok(Generator {
             file: File::create(file_path)?,
             variables: HashMap::new(),
-            scopes: vec![Scope {
-                name: "main".to_string(),
-                used_bytes: 0,
-                instructions: vec![],
-            }],
+            scopes: vec![Scope::new("main".to_string())],
             data: vec![],
             i: 0,
         })
-    }
-
-    fn scope(&mut self) -> &mut Scope {
-        &mut self.scopes[self.i]
     }
 
     fn generate(&mut self, node: Node) {
@@ -162,8 +154,6 @@ impl Generator {
                             self.append(vec![Pop(RAX), Pop(RBX), Add(RAX, RBX), Push(RAX)]);
                         }
                         "define" => {
-                            let location = self.scope().res_bytes_loc(4);
-
                             let symbol = match call.get(1) {
                                 Some(Ident(s)) => s,
                                 Some(x) => panic!("{:?} is not a valid symbol", x),
@@ -172,7 +162,7 @@ impl Generator {
                             if let Some(x) = self.variables.get(symbol) {
                                 panic!("{symbol} is already defined at rbp-{x}");
                             } else {
-                                self.variables.insert(symbol.to_string(), location);
+                                self.scopes[self.i].new_var(symbol.to_string(), 4);
                             }
 
                             if let Some(x) = call.get(2) {
@@ -181,7 +171,10 @@ impl Generator {
                                 panic!("define requires 2 parameters");
                             }
 
-                            self.append(vec![Pop(RAX), Mov(Stack(location), RAX)]);
+                            self.append(vec![
+                                Pop(RAX),
+                                Mov(self.scopes[self.i].get_var(symbol).unwrap(), RAX),
+                            ]);
                         }
                         x => println!("Unknown symbol {}", x),
                     }
@@ -191,7 +184,7 @@ impl Generator {
             }
             Ident(ident) => {
                 self.append(vec![
-                    Mov(RAX, Stack(*self.variables.get(&ident).unwrap())),
+                    Mov(RAX, self.scopes[self.i].get_var(&ident).unwrap()),
                     Push(RAX),
                 ]);
             }
@@ -201,11 +194,11 @@ impl Generator {
 
     fn open_scope(&mut self, name: &str) {
         self.i += 1;
-        self.scopes.push(Scope {
-            name: name.to_string(),
-            used_bytes: 0,
-            instructions: vec![],
-        });
+        self.scopes.push(Scope::new(name.to_string()));
+    }
+
+    fn close_scope(&mut self) {
+        self.i -= 1;
     }
 
     fn append(&mut self, instructions: Vec<Instr>) {
