@@ -1,1 +1,4 @@
 /target
+*.o
+a.out
+*.asm

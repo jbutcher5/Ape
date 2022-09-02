@@ -7,7 +7,7 @@ use code_gen::Program;
 use parser::Parser;
 
 fn main() -> std::io::Result<()> {
-    let mut parser = Parser::new("test.lp")?;
+    let mut parser = Parser::new("test.ape")?;
 
     let result = parser.parse();
     let mut program = Program::new("out.asm")?;
