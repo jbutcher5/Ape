@@ -1,6 +1,5 @@
-(define x 6)
-5
-(display (+ x 5))
-(display (+ x 5))
-(display x)
-(display 5)
+(define y 3)
+(scope
+  (define x 5)
+  (display x)
+  (display y))

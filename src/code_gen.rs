@@ -20,7 +20,7 @@ pub enum Register {
     RSP,
     RBP,
     R(u8),
-    Stack(u64),
+    Stack(i64),
     Data(String),
 }
 
@@ -39,6 +39,7 @@ pub enum Instr {
     Subl(i64, i64),
     Return,
     Syscall,
+    Scoped(Scope),
 }
 
 #[derive(Debug, Clone)]
@@ -49,17 +50,11 @@ pub struct DefineBytes {
 
 #[derive(Debug, Clone)]
 pub struct Scope {
+    pub name: Option<String>,
     pub used_bytes: u64,
     pub instructions: Vec<Instr>,
-    pub functions: Vec<Function>,
     pub vars: HashMap<String, u64>,
-    pub is_main: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct Function {
-    pub name: String,
-    pub body: Scope,
+    pub parent: Option<Box<Scope>>,
 }
 
 #[derive(Debug)]
@@ -83,7 +78,13 @@ impl ToString for Register {
             RSP => "rsp".to_string(),
             RBP => "rbp".to_string(),
             R(n) => format!("r{n}"),
-            Stack(i) => format!("[rbp-{i}]"),
+            Stack(i) => {
+                if -i >= 0 {
+                    format!("[rbp+{}]", -i)
+                } else {
+                    format!("[rbp{}]", -i)
+                }
+            }
             Data(name) => name.to_owned(),
         }
     }
@@ -120,6 +121,7 @@ impl ToString for Instr {
                 .collect::<String>(),
             Return => "ret".to_string(),
             Syscall => "syscall".to_string(),
+            Scoped(scope) => scope.to_string(),
         }
     }
 }
@@ -147,22 +149,24 @@ impl ToString for Scope {
             Sub(RSP, RAX),
         ];
 
-        let footer = if self.is_main {
+        let footer = if self.name == Some("main".to_string()) {
             vec![Pop(RBP), Movl(RAX, 60), NullReg(RDI), Syscall, Return]
-        } else {
+        } else if self.name.is_some() {
             vec![Pop(RBP), Return]
+        } else {
+            vec![Pop(RBP)]
         };
 
         let body: Vec<Instr> = vec![header, self.instructions.clone(), footer].concat();
 
         [
-            if self.is_main {
-                "main:\n".to_string()
+            if let Some(name) = self.name.clone() {
+                format!("{name}:\n")
             } else {
                 String::new()
             },
             body.iter()
-                .map(|instr| format!("    {}\n", instr.to_string()))
+                .map(|instr| format!("{}\n", instr.to_string()))
                 .collect::<String>(),
         ]
         .concat()
@@ -170,13 +174,16 @@ impl ToString for Scope {
 }
 
 impl Scope {
-    pub fn new(is_main: bool) -> Self {
+    pub fn new(name: Option<String>, parent: Option<&Scope>) -> Self {
         Self {
+            name,
             used_bytes: 0,
             instructions: vec![],
-            functions: vec![],
             vars: HashMap::new(),
-            is_main,
+            parent: match parent {
+                Some(scope) => Some(Box::new(scope.clone())),
+                None => None,
+            },
         }
     }
 
@@ -190,7 +197,19 @@ impl Scope {
     }
 
     pub fn get_var(&self, name: &String) -> Option<Register> {
-        Some(Register::Stack(*self.vars.get(name)?))
+        fn traverse_parents(scope: Scope, acc: i64, name: &String) -> Option<i64> {
+            if let Some(x) = scope.vars.get(name) {
+                Some(acc + *x as i64)
+            } else {
+                traverse_parents(
+                    *scope.clone().parent?,
+                    acc - next_multiple((*scope.parent?).used_bytes, 16) as i64,
+                    name,
+                )
+            }
+        }
+
+        Some(Register::Stack(traverse_parents(self.clone(), 0, name)?))
     }
 
     pub fn res_bytes(&mut self, bytes: u64) {
@@ -201,37 +220,8 @@ impl Scope {
         self.res_bytes(bytes);
         self.used_bytes
     }
-}
 
-impl Program {
-    pub fn new(file_path: &str) -> std::io::Result<Self> {
-        Ok(Program {
-            file: File::create(file_path)?,
-            global_scope: Scope::new(true),
-            data: vec![DefineBytes {
-                name: "as_int".to_string(),
-                value: "`%d\\n`".to_string(),
-            }],
-        })
-    }
-
-    fn encode(&self) -> Vec<u8> {
-        [
-            include_bytes!("header.asm"),
-            self.global_scope.to_string().as_bytes(),
-            format!(
-                "section .data\n{}",
-                self.data
-                    .iter()
-                    .map(|db| format!("    {}\n", db.to_string()))
-                    .collect::<String>()
-            )
-            .as_bytes(),
-        ]
-        .concat()
-    }
-
-    fn generate_node(&mut self, node: Node) {
+    pub fn generate_node(&mut self, node: Node) {
         use Instr::*;
         use Register::*;
 
@@ -257,10 +247,10 @@ impl Program {
                                 Some(x) => panic!("{:?} is not a valid symbol", x),
                                 _ => panic!("define requires 2 parameters"),
                             };
-                            if let Some(x) = self.global_scope.vars.get(symbol) {
+                            if let Some(x) = self.vars.get(symbol) {
                                 panic!("{symbol} is already defined at rbp-{x}");
                             } else {
-                                self.global_scope.new_var(symbol.to_string(), 8);
+                                self.new_var(symbol.to_string(), 8);
                             }
 
                             if let Some(x) = call.get(2) {
@@ -269,10 +259,7 @@ impl Program {
                                 panic!("define requires 2 parameters");
                             }
 
-                            self.append(vec![
-                                Pop(RAX),
-                                Mov(self.global_scope.get_var(symbol).unwrap(), RAX),
-                            ]);
+                            self.append(vec![Pop(RAX), Mov(self.get_var(symbol).unwrap(), RAX)]);
                         }
                         "display" => {
                             for x in &call[1..call.len()] {
@@ -281,6 +268,15 @@ impl Program {
 
                             self.append(vec![Pop(RDI), Instr::Call("print_value".to_string())]);
                         }
+                        "scope" => {
+                            let mut new_scope = Scope::new(None, Some(self));
+
+                            for x in &call[1..call.len()] {
+                                new_scope.generate_node(x.clone());
+                            }
+
+                            self.append(vec![Scoped(new_scope)]);
+                        }
                         x => println!("Unknown symbol {}", x),
                     }
                 } else {
@@ -288,22 +284,44 @@ impl Program {
                 }
             }
             Node::Ident(ident) => {
-                self.append(vec![
-                    Mov(RAX, self.global_scope.get_var(&ident).unwrap()),
-                    Push(RAX),
-                ]);
+                self.append(vec![Mov(RAX, self.get_var(&ident).unwrap()), Push(RAX)]);
             }
             _ => panic!("Lmao wtf bro your code is shit"),
         }
     }
+}
 
-    fn append(&mut self, instructions: Vec<Instr>) {
-        self.global_scope.append(instructions)
+impl Program {
+    pub fn new(file_path: &str) -> std::io::Result<Self> {
+        Ok(Program {
+            file: File::create(file_path)?,
+            global_scope: Scope::new(Some("main".to_string()), None),
+            data: vec![DefineBytes {
+                name: "as_int".to_string(),
+                value: "`%d\\n`".to_string(),
+            }],
+        })
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        [
+            include_bytes!("header.asm"),
+            self.global_scope.to_string().as_bytes(),
+            format!(
+                "section .data\n{}",
+                self.data
+                    .iter()
+                    .map(|db| format!("    {}\n", db.to_string()))
+                    .collect::<String>()
+            )
+            .as_bytes(),
+        ]
+        .concat()
     }
 
     pub fn generate(&mut self, nodes: Vec<Node>) {
         for node in nodes {
-            self.generate_node(node);
+            self.global_scope.generate_node(node);
         }
     }
 
