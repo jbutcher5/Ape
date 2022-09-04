@@ -9,6 +9,14 @@ fn next_multiple(start: u64, n: u64) -> u64 {
     (start as f64 / n as f64).ceil() as u64 * n
 }
 
+#[inline]
+fn stack_alignment(bytes: u64) -> i64 {
+    match bytes {
+        0 => 16,
+        start => next_multiple(start, 16) as i64,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Register {
     RAX,
@@ -53,7 +61,7 @@ pub struct Scope {
     pub name: Option<String>,
     pub used_bytes: u64,
     pub instructions: Vec<Instr>,
-    pub vars: HashMap<String, u64>,
+    pub vars: HashMap<String, i64>,
     pub parent: Option<Box<Scope>>,
 }
 
@@ -79,10 +87,10 @@ impl ToString for Register {
             RBP => "rbp".to_string(),
             R(n) => format!("r{n}"),
             Stack(i) => {
-                if -i >= 0 {
-                    format!("[rbp+{}]", -i)
+                if i >= &0 {
+                    format!("[rbp+{}]", i)
                 } else {
-                    format!("[rbp{}]", -i)
+                    format!("[rbp{}]", i)
                 }
             }
             Data(name) => name.to_owned(),
@@ -137,49 +145,70 @@ impl ToString for Scope {
         use Instr::*;
         use Register::*;
 
-        let stack_alignment = match self.used_bytes {
-            0 => 16,
-            start => next_multiple(start, 16),
-        };
-
         let header = vec![
             Push(RBP),
             Mov(RBP, RSP),
-            Movl(RAX, stack_alignment as i64),
+            Movl(RAX, stack_alignment(self.used_bytes)),
             Sub(RSP, RAX),
         ];
 
-        let footer = if self.name == Some("main".to_string()) {
-            vec![Pop(RBP), Movl(RAX, 60), NullReg(RDI), Syscall, Return]
+        let mut footer = vec![
+            Movl(RAX, stack_alignment(self.used_bytes)),
+            Add(RSP, RAX),
+            Pop(RBP),
+        ];
+
+        if self.name == Some("main".to_string()) {
+            footer.extend(vec![Movl(RAX, 60), NullReg(RDI), Syscall, Return]);
         } else if self.name.is_some() {
-            vec![Pop(RBP), Return]
-        } else {
-            vec![Pop(RBP)]
-        };
+            footer.push(Return);
+        }
 
         let body: Vec<Instr> = vec![header, self.instructions.clone(), footer].concat();
 
-        [
+        let result = [
             if let Some(name) = self.name.clone() {
                 format!("{name}:\n")
             } else {
                 String::new()
             },
-            body.iter()
-                .map(|instr| format!("{}\n", instr.to_string()))
-                .collect::<String>(),
+            {
+                let mut body_string = body
+                    .iter()
+                    .map(|instr| format!("    {}\n", instr.to_string()))
+                    .collect::<String>();
+
+                if self.name != Some("main".to_string()) {
+                    body_string = body_string.trim_start().to_string();
+                }
+
+                body_string
+            },
         ]
-        .concat()
+        .concat();
+        result
     }
 }
 
 impl Scope {
     pub fn new(name: Option<String>, parent: Option<&Scope>) -> Self {
+        let carried_vars = if let Some(scope) = parent {
+            let mut vars = scope.vars.clone();
+
+            for (_, val) in vars.iter_mut() {
+                *val += stack_alignment(scope.used_bytes) + 8;
+            }
+
+            vars
+        } else {
+            HashMap::new()
+        };
+
         Self {
             name,
             used_bytes: 0,
             instructions: vec![],
-            vars: HashMap::new(),
+            vars: carried_vars,
             parent: match parent {
                 Some(scope) => Some(Box::new(scope.clone())),
                 None => None,
@@ -193,23 +222,11 @@ impl Scope {
 
     pub fn new_var(&mut self, name: String, bytes: u64) {
         self.used_bytes += bytes;
-        self.vars.insert(name, self.used_bytes);
+        self.vars.insert(name, -(self.used_bytes as i64));
     }
 
     pub fn get_var(&self, name: &String) -> Option<Register> {
-        fn traverse_parents(scope: Scope, acc: i64, name: &String) -> Option<i64> {
-            if let Some(x) = scope.vars.get(name) {
-                Some(acc + *x as i64)
-            } else {
-                traverse_parents(
-                    *scope.clone().parent?,
-                    acc - next_multiple((*scope.parent?).used_bytes, 16) as i64,
-                    name,
-                )
-            }
-        }
-
-        Some(Register::Stack(traverse_parents(self.clone(), 0, name)?))
+        Some(Register::Stack(*self.vars.get(name)?))
     }
 
     pub fn res_bytes(&mut self, bytes: u64) {
@@ -247,9 +264,7 @@ impl Scope {
                                 Some(x) => panic!("{:?} is not a valid symbol", x),
                                 _ => panic!("define requires 2 parameters"),
                             };
-                            if let Some(x) = self.vars.get(symbol) {
-                                panic!("{symbol} is already defined at rbp-{x}");
-                            } else {
+                            if !self.vars.contains_key(symbol) {
                                 self.new_var(symbol.to_string(), 8);
                             }
 
@@ -286,7 +301,6 @@ impl Scope {
             Node::Ident(ident) => {
                 self.append(vec![Mov(RAX, self.get_var(&ident).unwrap()), Push(RAX)]);
             }
-            _ => panic!("Lmao wtf bro your code is shit"),
         }
     }
 }

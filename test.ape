@@ -1,5 +1,5 @@
 (define y 3)
 (scope
-  (define x 5)
-  (display x)
-  (display y))
+  (define y 5))
+
+(display y)
