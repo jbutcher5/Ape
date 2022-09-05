@@ -1,5 +1,11 @@
 (define y 3)
 (scope
-  (define y 5))
-
+  (define y 5)
+  (scope
+    (define z 2)
+    (display z)))
+(define o 9)
+(define a 9)
+(define b 9)
+(define c 9)
 (display y)

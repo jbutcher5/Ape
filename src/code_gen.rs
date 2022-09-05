@@ -33,18 +33,21 @@ pub enum Register {
 }
 
 #[derive(Debug, Clone)]
+pub enum Operand {
+    Reg(Register),
+    Value(i64),
+}
+
+#[derive(Debug, Clone)]
 pub enum Instr {
-    Pushl(i64),
-    Push(Register),
+    Raw(String),
+    Push(Operand),
     Pop(Register),
-    Movl(Register, i64),
-    Mov(Register, Register),
+    Mov(Register, Operand),
     Call(String),
     NullReg(Register),
-    Add(Register, Register),
-    Addl(i64, i64),
-    Sub(Register, Register),
-    Subl(i64, i64),
+    Add(Register, Operand),
+    Sub(Register, Operand),
     Return,
     Syscall,
     Scoped(Scope),
@@ -98,38 +101,33 @@ impl ToString for Register {
     }
 }
 
+impl ToString for Operand {
+    fn to_string(&self) -> String {
+        use Operand::*;
+
+        match self {
+            Reg(reg) => reg.to_string(),
+            Value(val) => val.to_string(),
+        }
+    }
+}
+
 impl ToString for Instr {
     fn to_string(&self) -> String {
         use Instr::*;
-        use Register::*;
 
         match self {
-            Pushl(n) => [Movl(RAX, *n), Push(RAX)]
-                .iter()
-                .map(Instr::to_string)
-                .intersperse("\n    ".to_string())
-                .collect::<String>(),
             Push(reg) => format!("push {}", reg.to_string()),
             Pop(reg) => format!("pop {}", reg.to_string()),
-            Movl(reg, n) => format!("mov {}, {n}", reg.to_string()),
-            Mov(reg1, reg2) => format!("mov {}, {}", reg1.to_string(), reg2.to_string()),
+            Mov(reg, op) => format!("mov {}, {}", reg.to_string(), op.to_string()),
             Call(name) => format!("call {name}"),
-            NullReg(reg) => Movl(reg.to_owned(), 0).to_string(),
-            Add(reg1, reg2) => format!("add {}, {}", reg1.to_string(), reg2.to_string()),
-            Addl(l1, l2) => [Movl(RAX, *l1), Movl(RBX, *l2), Add(RAX, RBX)]
-                .iter()
-                .map(Instr::to_string)
-                .intersperse("\n    ".to_string())
-                .collect::<String>(),
+            NullReg(reg) => format!("xor {}, {}", reg.to_string(), reg.to_string()),
+            Add(reg1, op) => format!("add {}, {}", reg1.to_string(), op.to_string()),
             Sub(reg1, reg2) => format!("sub {}, {}", reg1.to_string(), reg2.to_string()),
-            Subl(l1, l2) => [Movl(RAX, *l1), Movl(RBX, *l2), Sub(RAX, RBX)]
-                .iter()
-                .map(Instr::to_string)
-                .intersperse("\n    ".to_string())
-                .collect::<String>(),
             Return => "ret".to_string(),
             Syscall => "syscall".to_string(),
             Scoped(scope) => scope.to_string(),
+            Raw(string) => string.to_string(),
         }
     }
 }
@@ -143,23 +141,19 @@ impl ToString for DefineBytes {
 impl ToString for Scope {
     fn to_string(&self) -> String {
         use Instr::*;
+        use Operand::*;
         use Register::*;
 
         let header = vec![
-            Push(RBP),
-            Mov(RBP, RSP),
-            Movl(RAX, stack_alignment(self.used_bytes)),
-            Sub(RSP, RAX),
+            Push(Reg(RBP)),
+            Mov(RBP, Reg(RSP)),
+            Sub(RSP, Value(stack_alignment(self.used_bytes))),
         ];
 
-        let mut footer = vec![
-            Movl(RAX, stack_alignment(self.used_bytes)),
-            Add(RSP, RAX),
-            Pop(RBP),
-        ];
+        let mut footer = vec![Add(RSP, Value(stack_alignment(self.used_bytes))), Pop(RBP)];
 
         if self.name == Some("main".to_string()) {
-            footer.extend(vec![Movl(RAX, 60), NullReg(RDI), Syscall, Return]);
+            footer.extend(vec![Mov(RAX, Value(60)), NullReg(RDI), Syscall, Return]);
         } else if self.name.is_some() {
             footer.push(Return);
         }
@@ -240,11 +234,12 @@ impl Scope {
 
     pub fn generate_node(&mut self, node: Node) {
         use Instr::*;
+        use Operand::*;
         use Register::*;
 
         match node {
             Node::Int(x) => {
-                self.append(vec![Pushl(x)]);
+                self.append(vec![Push(Value(x))]);
             }
             Node::Call(call) => {
                 let ident = call.first().expect("Empty call");
@@ -256,7 +251,7 @@ impl Scope {
                                 self.generate_node(x.clone());
                             }
 
-                            self.append(vec![Pop(RAX), Pop(RBX), Add(RAX, RBX), Push(RAX)]);
+                            self.append(vec![Pop(RAX), Pop(RBX), Add(RAX, Reg(RBX)), Push(Reg(RAX))]);
                         }
                         "define" => {
                             let symbol = match call.get(1) {
@@ -274,7 +269,7 @@ impl Scope {
                                 panic!("define requires 2 parameters");
                             }
 
-                            self.append(vec![Pop(RAX), Mov(self.get_var(symbol).unwrap(), RAX)]);
+                            self.append(vec![Pop(RAX), Mov(self.get_var(symbol).unwrap(), Reg(RAX))]);
                         }
                         "display" => {
                             for x in &call[1..call.len()] {
@@ -299,7 +294,7 @@ impl Scope {
                 }
             }
             Node::Ident(ident) => {
-                self.append(vec![Mov(RAX, self.get_var(&ident).unwrap()), Push(RAX)]);
+                self.append(vec![Mov(RAX, Reg(self.get_var(&ident).unwrap())), Push(Reg(RAX))]);
             }
         }
     }
