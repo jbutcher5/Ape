@@ -1,9 +1,9 @@
 use crate::asm;
-use crate::parser;
 
 use asm::{Instr, Instr::*, Operand::*, Register, Register::*};
 use std::collections::HashMap;
 
+#[inline]
 fn push_type(t: Type) -> Vec<Instr> {
     match t {
         Int(val) => vec![Mov(RAX, Value(val)), Push(Reg(RAX))],
@@ -11,10 +11,11 @@ fn push_type(t: Type) -> Vec<Instr> {
     }
 }
 
+#[inline]
 fn mov_type(r: Register, t: Type) -> Instr {
     match t {
-        Int(val) => Mov(RAX, Value(val)),
-        Bool(val) => Mov(RAX, Value(val as i64)), // TODO: Implement 8 bit registers and use AL instead of RAX
+        Int(val) => Mov(r, Value(val)),
+        Bool(val) => Mov(r, Value(val as i64)), // TODO: Implement 8 bit registers and use AL instead of RAX
     }
 }
 
@@ -124,6 +125,9 @@ impl Generator {
             }
         }
 
-        self.functions.get_mut(&function.to_string()).unwrap()
+        self.functions
+            .get_mut(&function.to_string())
+            .unwrap()
+            .push(Call(c_func));
     }
 }
