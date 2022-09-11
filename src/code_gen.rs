@@ -12,6 +12,16 @@ fn push_type(t: Type) -> Vec<Instr> {
 }
 
 #[inline]
+fn push_reg(r: Register) -> Vec<Instr> {
+    vec![Mov(RAX, Reg(r)), Push(Reg(RAX))]
+}
+
+#[inline]
+fn mov_reg(to: Register, from: Register) -> Instr {
+    Mov(to, Reg(from))
+}
+
+#[inline]
 fn mov_type(r: Register, t: Type) -> Instr {
     match t {
         Int(val) => Mov(r, Value(val)),
@@ -31,21 +41,22 @@ impl Type {
 
         match self {
             Int(_) => 8,
-            Bool(_) => 1,
+            Bool(_) => 8,
         }
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub enum InterRep {
     Define(String, Type),
-    CCall(String, Vec<Type>),
+    CCall(String, Vec<Register>),
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub enum StackDirective {
     Variable(String, Type),
-    Temp(Type),
+    TempLiteral(Type),
+    TempReg(Register),
     BasePointer,
 }
 
@@ -58,8 +69,8 @@ impl StackDirective {
         use StackDirective::*;
 
         match self {
-            Variable(_, t) => t.byte_size(),
-            Temp(t) => t.byte_size(),
+            Variable(_, t) | TempLiteral(t) => t.byte_size(),
+            TempReg(_) => 8,
             BasePointer => 8,
         }
     }
@@ -68,7 +79,7 @@ impl StackDirective {
 pub struct Generator {
     stack: Vec<StackDirective>,
     bp: u64,
-    functions: HashMap<String, Vec<Instr>>,
+    pub functions: HashMap<String, Vec<Instr>>,
 }
 
 impl Generator {
@@ -84,6 +95,23 @@ impl Generator {
             functions: initial.clone(),
             bp: 0,
         }
+    }
+
+    pub fn get_variable(&self, name: String) -> Register {
+        let mut acc: i64 = 0;
+
+        for x in &self.stack[0..] {
+            if let Variable(var, t) = x {
+                acc -= x.byte_size() as i64;
+                if var.clone() == name {
+                    break;
+                }
+            } else {
+                acc -= x.byte_size() as i64;
+            }
+        }
+
+        Stack(acc)
     }
 
     pub fn apply(&mut self, ir: Vec<InterRep>) {
@@ -107,21 +135,22 @@ impl Generator {
             .unwrap()
             .extend(match directive {
                 BasePointer => vec![Push(Reg(RBP))],
-                Variable(_, t) | Temp(t) => push_type(t),
+                Variable(_, t) | TempLiteral(t) => push_type(t),
+                TempReg(r) => push_reg(r),
             })
     }
 
-    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Type>) {
+    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Register>) {
         let registers = vec![R(9), R(8), RCX, RDX, RSI, RDI];
 
-        for (i, t) in parameters.iter().enumerate().rev() {
+        for (i, r) in parameters.iter().enumerate().rev() {
             if i > registers.len() - 1 {
-                self.push(function, Temp(t.clone()));
+                self.push(function, TempReg(r.clone()));
             } else {
                 self.functions
                     .get_mut(&function.to_string())
                     .unwrap()
-                    .push(mov_type(registers[i].clone(), t.clone()))
+                    .push(mov_reg(registers[i].clone(), r.clone()))
             }
         }
 
