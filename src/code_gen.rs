@@ -4,6 +4,14 @@ use asm::{Instr, Instr::*, Operand::*, Register, Register::*};
 use std::collections::HashMap;
 
 #[inline]
+fn next_aligned_stack(bytes: u64) -> u64 {
+    match bytes {
+        0 => 16,
+        start => (start as f64 / 16.0).ceil() as u64 * 16,
+    }
+}
+
+#[inline]
 fn push_type(t: Type) -> Vec<Instr> {
     match t {
         Int(val) => vec![Mov(RAX, Value(val)), Push(Reg(RAX))],
@@ -52,11 +60,12 @@ pub enum InterRep {
     CCall(String, Vec<Register>),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum StackDirective {
     Variable(String, Type),
     TempLiteral(Type),
     TempReg(Register),
+    Empty(u64),
     BasePointer,
 }
 
@@ -72,6 +81,7 @@ impl StackDirective {
             Variable(_, t) | TempLiteral(t) => t.byte_size(),
             TempReg(_) => 8,
             BasePointer => 8,
+            Empty(n) => *n,
         }
     }
 }
@@ -79,7 +89,8 @@ impl StackDirective {
 pub struct Generator {
     stack: Vec<StackDirective>,
     bp: u64,
-    pub functions: HashMap<String, Vec<Instr>>,
+    functions: HashMap<String, Vec<Instr>>,
+    data: HashMap<String, String>,
 }
 
 impl Generator {
@@ -92,8 +103,9 @@ impl Generator {
 
         Self {
             stack: vec![BasePointer],
-            functions: initial.clone(),
             bp: 0,
+            functions: initial.clone(),
+            data: HashMap::new(),
         }
     }
 
@@ -137,20 +149,47 @@ impl Generator {
                 BasePointer => vec![Push(Reg(RBP))],
                 Variable(_, t) | TempLiteral(t) => push_type(t),
                 TempReg(r) => push_reg(r),
+                Empty(n) => vec![Sub(RSP, Value(n as i64))],
             })
     }
 
+    fn stack_size_from_rbp(&self) -> u64 {
+        let mut acc = 0;
+
+        for x in self.stack.iter().rev() {
+            if *x == BasePointer {
+                break;
+            }
+            acc += x.byte_size();
+        }
+
+        acc
+    }
+
     fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Register>) {
-        let registers = vec![R(9), R(8), RCX, RDX, RSI, RDI];
+        const REGSITERS: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
+
+        let parameter_stack_size = if parameters.len() > 6 {
+            parameters[5..].iter().map(|x| 8).sum()
+        } else {
+            0
+        };
+
+        let new_stack_size = parameter_stack_size + self.stack_size_from_rbp();
+        let next_multiple_of_16 = next_aligned_stack(new_stack_size);
+
+        if new_stack_size != next_multiple_of_16 {
+            self.push("main", Empty(next_multiple_of_16 - new_stack_size))
+        }
 
         for (i, r) in parameters.iter().enumerate().rev() {
-            if i > registers.len() - 1 {
+            if i > 5 {
                 self.push(function, TempReg(r.clone()));
             } else {
                 self.functions
                     .get_mut(&function.to_string())
                     .unwrap()
-                    .push(mov_reg(registers[i].clone(), r.clone()))
+                    .push(mov_reg(REGSITERS[i].clone(), r.clone()))
             }
         }
 
@@ -171,13 +210,22 @@ impl Generator {
         self.write_exit();
 
         let mut buffer: Vec<u8> = include_bytes!("header.asm").to_vec();
-        for (key, value) in self.functions.iter() {
+        for (key, value) in &self.functions {
             buffer.extend(format!("\n{}:\n", key).as_bytes());
             for instr in value {
                 buffer.extend(format!("    {}\n", instr.to_string()).as_bytes())
             }
         }
 
+        buffer.extend(b"\nsection .data\n");
+        for (key, value) in &self.data {
+            buffer.extend(format!("{}: db {}", key, value).as_bytes());
+        }
+
         buffer
+    }
+
+    pub fn define_bytes(&mut self, name: String, value: String) {
+        self.data.insert(name, value);
     }
 }

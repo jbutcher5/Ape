@@ -13,10 +13,15 @@ fn main() -> io::Result<()> {
     generator.apply(vec![
         Define("x".to_string(), Int(2)),
         CCall(
-            "print_value".to_string(),
-            vec![generator.get_variable("x".to_string())],
+            "printf".to_string(),
+            vec![
+                asm::Register::Data("as_int".to_string()),
+                generator.get_variable("x".to_string()),
+            ],
         ),
     ]);
+
+    generator.define_bytes("as_int".to_string(), "`%d\\n`".to_string());
 
     let mut file = File::create("out.asm")?;
     file.write_all(&generator.export())?;
