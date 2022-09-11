@@ -43,6 +43,19 @@ pub enum Type {
     Bool(bool),
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub enum Node {
+    Literal(Type),
+    Ident(String),
+    Str(String),
+}
+
+#[derive(Clone, PartialEq, Debug)]
+enum NodeDefined {
+    Literal(Type),
+    Var(Register),
+}
+
 impl Type {
     pub fn byte_size(&self) -> u64 {
         use Type::*;
@@ -57,7 +70,7 @@ impl Type {
 #[derive(Clone, Debug)]
 pub enum InterRep {
     Define(String, Type),
-    CCall(String, Vec<Register>),
+    CCall(String, Vec<Node>),
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -88,31 +101,31 @@ impl StackDirective {
 
 pub struct Generator {
     stack: Vec<StackDirective>,
-    bp: u64,
+    bp: usize,
     functions: HashMap<String, Vec<Instr>>,
-    data: HashMap<String, String>,
+    data_named: HashMap<String, String>,
+    data_unnamed: Vec<String>,
 }
 
 impl Generator {
     pub fn new() -> Self {
-        use StackDirective::*;
-
         let mut initial = HashMap::new();
 
-        initial.insert("main".to_string(), vec![Push(Reg(RBP)), Mov(RBP, Reg(RSP))]);
+        initial.insert("main".to_string(), vec![Mov(RBP, Reg(RSP))]);
 
         Self {
-            stack: vec![BasePointer],
+            stack: vec![],
             bp: 0,
             functions: initial.clone(),
-            data: HashMap::new(),
+            data_named: HashMap::new(),
+            data_unnamed: vec![],
         }
     }
 
     pub fn get_variable(&self, name: String) -> Register {
         let mut acc: i64 = 0;
 
-        for x in &self.stack[0..] {
+        for x in &self.stack[self.bp..] {
             if let Variable(var, t) = x {
                 acc -= x.byte_size() as i64;
                 if var.clone() == name {
@@ -135,7 +148,15 @@ impl Generator {
     fn handle_ir(&mut self, instr: InterRep) {
         match instr {
             Define(name, value) => self.push("main", Variable(name, value)),
-            CCall(name, parameters) => self.c_call("main", name, parameters),
+            CCall(name, parameters) => {
+                let mut defined_nodes = vec![];
+
+                for x in &parameters {
+                    defined_nodes.push(self.define_node(&x))
+                }
+
+                self.c_call("main", name, defined_nodes)
+            }
         }
     }
 
@@ -166,13 +187,27 @@ impl Generator {
         acc
     }
 
-    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Register>) {
+    fn define_node(&mut self, node: &Node) -> NodeDefined {
+        match node {
+            Node::Literal(t) => NodeDefined::Literal(t.clone()),
+            Node::Ident(ident) => NodeDefined::Var(self.get_variable(ident.to_owned())),
+            Node::Str(s) => NodeDefined::Var(match self.data_unnamed.iter().position(|r| r == s) {
+                Some(n) => Register::Data(format!("s{}", n)),
+                None => {
+                    self.data_unnamed.push(s.to_owned());
+                    Data(format!("s{}", self.data_unnamed.len() - 1))
+                }
+            }),
+        }
+    }
+
+    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<NodeDefined>) {
         const REGSITERS: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
 
         let parameter_stack_size = if parameters.len() > 6 {
-            parameters[5..].iter().map(|x| 8).sum()
+            parameters[5..].iter().map(|x| 8).sum::<u64>() + 8
         } else {
-            0
+            8
         };
 
         let new_stack_size = parameter_stack_size + self.stack_size_from_rbp();
@@ -182,14 +217,23 @@ impl Generator {
             self.push("main", Empty(next_multiple_of_16 - new_stack_size))
         }
 
-        for (i, r) in parameters.iter().enumerate().rev() {
+        for (i, x) in parameters.iter().enumerate().rev() {
             if i > 5 {
-                self.push(function, TempReg(r.clone()));
+                self.push(
+                    function,
+                    match x {
+                        NodeDefined::Var(v) => TempReg(v.to_owned()),
+                        NodeDefined::Literal(t) => TempLiteral(t.clone()),
+                    },
+                );
             } else {
                 self.functions
                     .get_mut(&function.to_string())
                     .unwrap()
-                    .push(mov_reg(REGSITERS[i].clone(), r.clone()))
+                    .push(match x {
+                        NodeDefined::Var(v) => mov_reg(REGSITERS[i].clone(), v.to_owned()),
+                        NodeDefined::Literal(t) => mov_type(REGSITERS[i].clone(), t.clone()),
+                    })
             }
         }
 
@@ -218,14 +262,18 @@ impl Generator {
         }
 
         buffer.extend(b"\nsection .data\n");
-        for (key, value) in &self.data {
-            buffer.extend(format!("{}: db {}", key, value).as_bytes());
+        for (key, value) in &self.data_named {
+            buffer.extend(format!("{}: db {}\n", key, value).as_bytes());
+        }
+
+        for (i, v) in self.data_unnamed.iter().enumerate() {
+            buffer.extend(format!("s{}: db {}\n", i, v).as_bytes());
         }
 
         buffer
     }
 
     pub fn define_bytes(&mut self, name: String, value: String) {
-        self.data.insert(name, value);
+        self.data_named.insert(name, value);
     }
 }

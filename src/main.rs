@@ -4,6 +4,7 @@ pub mod parser;
 
 use code_gen::Generator;
 use code_gen::InterRep::*;
+use code_gen::Node::*;
 use code_gen::Type::*;
 
 use std::{fs::File, io, io::Write};
@@ -14,10 +15,7 @@ fn main() -> io::Result<()> {
         Define("x".to_string(), Int(2)),
         CCall(
             "printf".to_string(),
-            vec![
-                asm::Register::Data("as_int".to_string()),
-                generator.get_variable("x".to_string()),
-            ],
+            vec![Str("`%d\\n`".to_string()), Ident("x".to_string())],
         ),
     ]);
 
