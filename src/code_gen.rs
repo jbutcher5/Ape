@@ -159,4 +159,25 @@ impl Generator {
             .unwrap()
             .push(Call(c_func));
     }
+
+    fn write_exit(&mut self) {
+        self.functions
+            .get_mut(&"main".to_string())
+            .unwrap()
+            .extend(vec![Mov(RAX, Value(60)), Mov(RDI, Value(0)), Syscall]);
+    }
+
+    pub fn export(&mut self) -> Vec<u8> {
+        self.write_exit();
+
+        let mut buffer: Vec<u8> = include_bytes!("header.asm").to_vec();
+        for (key, value) in self.functions.iter() {
+            buffer.extend(format!("\n{}:\n", key).as_bytes());
+            for instr in value {
+                buffer.extend(format!("    {}\n", instr.to_string()).as_bytes())
+            }
+        }
+
+        buffer
+    }
 }

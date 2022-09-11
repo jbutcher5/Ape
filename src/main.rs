@@ -6,7 +6,9 @@ use code_gen::Generator;
 use code_gen::InterRep::*;
 use code_gen::Type::*;
 
-fn main() {
+use std::{fs::File, io, io::Write};
+
+fn main() -> io::Result<()> {
     let mut generator = Generator::new();
     generator.apply(vec![
         Define("x".to_string(), Int(2)),
@@ -16,5 +18,8 @@ fn main() {
         ),
     ]);
 
-    println!("{:?}", generator.functions);
+    let mut file = File::create("out.asm")?;
+    file.write_all(&generator.export())?;
+
+    Ok(())
 }
