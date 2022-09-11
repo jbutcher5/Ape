@@ -19,8 +19,6 @@ fn main() -> io::Result<()> {
         ),
     ]);
 
-    generator.define_bytes("as_int".to_string(), "`%d\\n`".to_string());
-
     let mut file = File::create("out.asm")?;
     file.write_all(&generator.export())?;
 
