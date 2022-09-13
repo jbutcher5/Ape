@@ -12,28 +12,43 @@ fn next_aligned_stack(bytes: u64) -> u64 {
 }
 
 #[inline]
-fn push_type(t: Type) -> Vec<Instr> {
+fn push_type(t: Type, stack_size: u64) -> Vec<Instr> {
     match t {
         Int(val) => vec![Mov(RAX, Value(val)), Push(Reg(RAX))],
-        Bool(val) => vec![Mov(RAX, Value(val as i64)), Push(Reg(RAX))], // TODO: Implement 8 bit registers and use AL instead of RAX
+        Bool(val) => vec![
+            Sub(RSP, Value(1)),
+            Raw(format!("mov BYTE [rbp-{}], {}", stack_size, val as i64)),
+        ],
     }
 }
 
 #[inline]
-fn push_reg(r: Register) -> Vec<Instr> {
-    vec![Mov(RAX, Reg(r)), Push(Reg(RAX))]
+fn push_reg(r: Register, size: u64, stack_size: u64) -> Vec<Instr> {
+    match size {
+        1 => vec![
+            Mov(AL, Reg(r)),
+            Sub(RSP, Value(1)),
+            Raw(format!("mov BYTE [rbp-{}], al", stack_size + 1)),
+        ],
+        2 => vec![Mov(AX, Reg(r)), Push(Reg(AX))],
+        4 => vec![Mov(EAX, Reg(r)), Push(Reg(EAX))],
+        _ => vec![Mov(RAX, Reg(r)), Push(Reg(RAX))],
+    }
 }
 
 #[inline]
 fn mov_reg(to: Register, from: Register) -> Instr {
-    Mov(to, Reg(from))
+    match (to.byte_size(), from.byte_size()) {
+        (8, 1) => Movzx(to, from),
+        _ => Mov(to, Reg(from)),
+    }
 }
 
 #[inline]
 fn mov_type(r: Register, t: Type) -> Instr {
     match t {
         Int(val) => Mov(r, Value(val)),
-        Bool(val) => Mov(r, Value(val as i64)), // TODO: Implement 8 bit registers and use AL instead of RAX
+        Bool(val) => Mov(r, Value(val as i64)),
     }
 }
 
@@ -62,7 +77,7 @@ impl Type {
 
         match self {
             Int(_) => 8,
-            Bool(_) => 8,
+            Bool(_) => 1,
         }
     }
 }
@@ -92,7 +107,7 @@ impl StackDirective {
 
         match self {
             Variable(_, t) | TempLiteral(t) => t.byte_size(),
-            TempReg(_) => 8,
+            TempReg(r) => r.byte_size(),
             BasePointer => 8,
             Empty(n) => *n,
         }
@@ -122,13 +137,15 @@ impl Generator {
         }
     }
 
-    pub fn get_variable(&self, name: String) -> Register {
+    pub fn get_variable(&self, name: String) -> Option<Register> {
         let mut acc: i64 = 0;
+        let mut t: Option<Type> = None;
 
         for x in &self.stack[self.bp..] {
-            if let Variable(var, t) = x {
+            if let Variable(var, t2) = x {
                 acc -= x.byte_size() as i64;
                 if var.clone() == name {
+                    t = Some(t2.clone());
                     break;
                 }
             } else {
@@ -136,7 +153,7 @@ impl Generator {
             }
         }
 
-        Stack(acc)
+        Some(Stack(acc, t?.byte_size()))
     }
 
     pub fn apply(&mut self, ir: Vec<InterRep>) {
@@ -162,14 +179,15 @@ impl Generator {
 
     fn push(&mut self, function: &str, directive: StackDirective) {
         self.stack.push(directive.clone());
+        let scope_size = self.stack_size_from_rbp();
 
         self.functions
             .get_mut(&function.to_string())
             .unwrap()
             .extend(match directive {
                 BasePointer => vec![Push(Reg(RBP))],
-                Variable(_, t) | TempLiteral(t) => push_type(t),
-                TempReg(r) => push_reg(r),
+                Variable(_, t) | TempLiteral(t) => push_type(t, scope_size),
+                TempReg(r) => push_reg(r.clone(), r.byte_size(), scope_size),
                 Empty(n) => vec![Sub(RSP, Value(n as i64))],
             })
     }
@@ -190,7 +208,7 @@ impl Generator {
     fn define_node(&mut self, node: &Node) -> NodeDefined {
         match node {
             Node::Literal(t) => NodeDefined::Literal(t.clone()),
-            Node::Ident(ident) => NodeDefined::Var(self.get_variable(ident.to_owned())),
+            Node::Ident(ident) => NodeDefined::Var(self.get_variable(ident.to_owned()).unwrap()),
             Node::Str(s) => NodeDefined::Var(match self.data_unnamed.iter().position(|r| r == s) {
                 Some(n) => Register::Data(format!("s{}", n)),
                 None => {
@@ -202,10 +220,17 @@ impl Generator {
     }
 
     fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<NodeDefined>) {
-        const REGSITERS: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
+        const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
 
         let parameter_stack_size = if parameters.len() > 6 {
-            parameters[5..].iter().map(|x| 8).sum::<u64>() + 8
+            parameters[5..]
+                .iter()
+                .map(|x| match x {
+                    NodeDefined::Literal(t) => t.byte_size(),
+                    NodeDefined::Var(r) => r.byte_size(),
+                })
+                .sum::<u64>()
+                + 8
         } else {
             8
         };
@@ -222,7 +247,7 @@ impl Generator {
                 self.push(
                     function,
                     match x {
-                        NodeDefined::Var(v) => TempReg(v.to_owned()),
+                        NodeDefined::Var(r) => TempReg(r.to_owned()),
                         NodeDefined::Literal(t) => TempLiteral(t.clone()),
                     },
                 );
@@ -230,10 +255,10 @@ impl Generator {
                 self.functions
                     .get_mut(&function.to_string())
                     .unwrap()
-                    .push(match x {
-                        NodeDefined::Var(v) => mov_reg(REGSITERS[i].clone(), v.to_owned()),
-                        NodeDefined::Literal(t) => mov_type(REGSITERS[i].clone(), t.clone()),
-                    })
+                    .extend(vec![match x {
+                        NodeDefined::Var(v) => mov_reg(REGSITERS64[i].clone(), v.to_owned()),
+                        NodeDefined::Literal(t) => mov_type(REGSITERS64[i].clone(), t.clone()),
+                    }])
             }
         }
 
