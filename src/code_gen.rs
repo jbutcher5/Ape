@@ -17,7 +17,7 @@ fn push_type(t: Type, stack_size: u64) -> Vec<Instr> {
         Int(val) => vec![Mov(RAX, Value(val)), Push(Reg(RAX))],
         Bool(val) => vec![
             Sub(RSP, Value(1)),
-            Raw(format!("mov BYTE [rbp-{}], {}", stack_size, val as i64)),
+            Mov(Stack(-(stack_size as i64), 1), Value(val as i64)),
         ],
     }
 }
@@ -28,7 +28,7 @@ fn push_reg(r: Register, size: u64, stack_size: u64) -> Vec<Instr> {
         1 => vec![
             Mov(AL, Reg(r)),
             Sub(RSP, Value(1)),
-            Raw(format!("mov BYTE [rbp-{}], al", stack_size + 1)),
+            Mov(Stack(-(stack_size as i64), 1), Reg(AL)),
         ],
         2 => vec![Mov(AX, Reg(r)), Push(Reg(AX))],
         4 => vec![Mov(EAX, Reg(r)), Push(Reg(EAX))],
@@ -118,8 +118,7 @@ pub struct Generator {
     stack: Vec<StackDirective>,
     bp: usize,
     functions: HashMap<String, Vec<Instr>>,
-    data_named: HashMap<String, String>,
-    data_unnamed: Vec<String>,
+    data: Vec<String>,
 }
 
 impl Generator {
@@ -132,8 +131,7 @@ impl Generator {
             stack: vec![],
             bp: 0,
             functions: initial.clone(),
-            data_named: HashMap::new(),
-            data_unnamed: vec![],
+            data: vec![],
         }
     }
 
@@ -209,11 +207,11 @@ impl Generator {
         match node {
             Node::Literal(t) => NodeDefined::Literal(t.clone()),
             Node::Ident(ident) => NodeDefined::Var(self.get_variable(ident.to_owned()).unwrap()),
-            Node::Str(s) => NodeDefined::Var(match self.data_unnamed.iter().position(|r| r == s) {
+            Node::Str(s) => NodeDefined::Var(match self.data.iter().position(|r| r == s) {
                 Some(n) => Register::Data(format!("s{}", n)),
                 None => {
-                    self.data_unnamed.push(s.to_owned());
-                    Data(format!("s{}", self.data_unnamed.len() - 1))
+                    self.data.push(s.to_owned());
+                    Data(format!("s{}", self.data.len() - 1))
                 }
             }),
         }
@@ -287,18 +285,10 @@ impl Generator {
         }
 
         buffer.extend(b"\nsection .data\n");
-        for (key, value) in &self.data_named {
-            buffer.extend(format!("{}: db {}\n", key, value).as_bytes());
-        }
-
-        for (i, v) in self.data_unnamed.iter().enumerate() {
-            buffer.extend(format!("s{}: db {}\n", i, v).as_bytes());
+        for (i, v) in self.data.iter().enumerate() {
+            buffer.extend(format!("    s{}: db {}\n", i, v).as_bytes());
         }
 
         buffer
-    }
-
-    pub fn define_bytes(&mut self, name: String, value: String) {
-        self.data_named.insert(name, value);
     }
 }
