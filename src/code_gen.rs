@@ -52,20 +52,20 @@ fn mov_type(r: Register, t: Type) -> Instr {
     }
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Type {
     Int(i64),
     Bool(bool),
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Node {
     Literal(Type),
     Ident(String),
     Str(String),
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 enum NodeDefined {
     Literal(Type),
     Var(Register),
@@ -88,7 +88,7 @@ pub enum InterRep {
     CCall(String, Vec<Node>),
 }
 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Eq, PartialEq, Debug)]
 pub enum StackDirective {
     Variable(String, Type),
     Str(String, String),
@@ -123,10 +123,9 @@ pub struct Generator {
     data: Vec<String>,
 }
 
-impl Generator {
-    pub fn new() -> Self {
+impl Default for Generator {
+    fn default() -> Self {
         let mut initial = HashMap::new();
-
         initial.insert("main".to_string(), vec![Mov(RBP, Reg(RSP))]);
 
         Self {
@@ -136,7 +135,9 @@ impl Generator {
             data: vec![],
         }
     }
+}
 
+impl Generator {
     pub fn get_variable(&self, name: String) -> Option<Register> {
         let mut acc: i64 = 0;
         let mut t: Option<Type> = None;
@@ -182,7 +183,7 @@ impl Generator {
                 let mut defined_nodes = vec![];
 
                 for x in &parameters {
-                    let (ident, s_val) = self.define_node(&x);
+                    let (ident, s_val) = self.define_node(x);
 
                     if let Some(string_value) = s_val {
                         self.data.push(string_value)
@@ -246,7 +247,7 @@ impl Generator {
         use NodeDefined::*;
 
         let directive = match value {
-            Var(Register::Data(ident)) => Str(name.to_owned(), ident),
+            Var(Register::Data(ident)) => Str(name, ident),
             Literal(t) => Variable(name, t),
             _ => panic!(),
         };

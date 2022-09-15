@@ -63,7 +63,7 @@ impl Register {
             RAX | RBX | RCX | RDX | RSI | RDI | RSP | RBP | R(_) | Data(_) => 8,
             EAX | EBX | ECX | EDX | ESI | EDI | ESP | EBP | RD(_) => 4,
             AX | AH | BX | BH | CX | CH | DX | DH | SI | DI | SP | BP | RW(_) => 2,
-            Stack(_, s) => s.clone(),
+            Stack(_, s) => s,
             _ => 1,
         }
     }
