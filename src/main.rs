@@ -12,10 +12,11 @@ use std::{fs::File, io, io::Write};
 fn main() -> io::Result<()> {
     let mut generator = Generator::new();
     generator.apply(vec![
-        Define("x".to_string(), Bool(true)),
+        Define("x".to_string(), Str("`%d\\n`".to_string())),
+        Define("y".to_string(), Literal(Bool(true))),
         CCall(
             "printf".to_string(),
-            vec![Str("`%d\\n`".to_string()), Ident("x".to_string())],
+            vec![Ident("x".to_string()), Ident("y".to_string())],
         ),
     ]);
 

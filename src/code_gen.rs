@@ -84,13 +84,14 @@ impl Type {
 
 #[derive(Clone, Debug)]
 pub enum InterRep {
-    Define(String, Type),
+    Define(String, Node),
     CCall(String, Vec<Node>),
 }
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum StackDirective {
     Variable(String, Type),
+    Str(String, String),
     TempLiteral(Type),
     TempReg(Register),
     Empty(u64),
@@ -110,6 +111,7 @@ impl StackDirective {
             TempReg(r) => r.byte_size(),
             BasePointer => 8,
             Empty(n) => *n,
+            Str(..) => 0,
         }
     }
 }
@@ -140,6 +142,11 @@ impl Generator {
         let mut t: Option<Type> = None;
 
         for x in &self.stack[self.bp..] {
+            if let Str(var, ident) = x {
+                if var.clone() == name {
+                    return Some(Data(ident.to_string()));
+                }
+            }
             if let Variable(var, t2) = x {
                 acc -= x.byte_size() as i64;
                 if var.clone() == name {
@@ -162,12 +169,26 @@ impl Generator {
 
     fn handle_ir(&mut self, instr: InterRep) {
         match instr {
-            Define(name, value) => self.push("main", Variable(name, value)),
+            Define(name, value) => {
+                let (ident, s_val) = self.define_node(&value);
+
+                if let Some(string_value) = s_val {
+                    self.data.push(string_value);
+                }
+
+                self.define("main", name, ident)
+            }
             CCall(name, parameters) => {
                 let mut defined_nodes = vec![];
 
                 for x in &parameters {
-                    defined_nodes.push(self.define_node(&x))
+                    let (ident, s_val) = self.define_node(&x);
+
+                    if let Some(string_value) = s_val {
+                        self.data.push(string_value)
+                    }
+
+                    defined_nodes.push(ident);
                 }
 
                 self.c_call("main", name, defined_nodes)
@@ -187,6 +208,7 @@ impl Generator {
                 Variable(_, t) | TempLiteral(t) => push_type(t, scope_size),
                 TempReg(r) => push_reg(r.clone(), r.byte_size(), scope_size),
                 Empty(n) => vec![Sub(RSP, Value(n as i64))],
+                _ => vec![],
             })
     }
 
@@ -203,18 +225,33 @@ impl Generator {
         acc
     }
 
-    fn define_node(&mut self, node: &Node) -> NodeDefined {
+    fn define_node(&mut self, node: &Node) -> (NodeDefined, Option<String>) {
         match node {
-            Node::Literal(t) => NodeDefined::Literal(t.clone()),
-            Node::Ident(ident) => NodeDefined::Var(self.get_variable(ident.to_owned()).unwrap()),
-            Node::Str(s) => NodeDefined::Var(match self.data.iter().position(|r| r == s) {
-                Some(n) => Register::Data(format!("s{}", n)),
-                None => {
-                    self.data.push(s.to_owned());
-                    Data(format!("s{}", self.data.len() - 1))
-                }
-            }),
+            Node::Literal(t) => (NodeDefined::Literal(t.clone()), None),
+            Node::Ident(ident) => (
+                NodeDefined::Var(self.get_variable(ident.to_owned()).unwrap()),
+                None,
+            ),
+            Node::Str(s) => match self.data.iter().position(|r| r == s) {
+                Some(n) => (NodeDefined::Var(Data(format!("s{}", n))), None),
+                None => (
+                    NodeDefined::Var(Data(format!("s{}", self.data.len()))),
+                    Some(s.to_owned()),
+                ),
+            },
         }
+    }
+
+    fn define(&mut self, function: &str, name: String, value: NodeDefined) {
+        use NodeDefined::*;
+
+        let directive = match value {
+            Var(Register::Data(ident)) => Str(name.to_owned(), ident),
+            Literal(t) => Variable(name, t),
+            _ => panic!(),
+        };
+
+        self.push(function, directive);
     }
 
     fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<NodeDefined>) {
