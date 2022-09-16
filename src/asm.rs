@@ -52,7 +52,7 @@ pub enum Register {
     RW(u8),
     RB(u8),
     Stack(i64, u64),
-    Data(String),
+    Data(usize),
 }
 
 impl Register {
@@ -106,7 +106,7 @@ impl ToString for Register {
                     format!("{} [rbp{}]", name_size(size), i)
                 }
             }
-            Data(name) => name.to_owned(),
+            Data(index) => format!("s{index}"),
             _ => match self {
                 RAX => "rax",
                 EAX => "eax",

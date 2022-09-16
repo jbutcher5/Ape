@@ -83,7 +83,7 @@ impl Type {
 }
 
 #[derive(Clone, Debug)]
-pub enum InterRep {
+pub enum IR {
     Define(String, Node),
     CCall(String, Vec<Node>),
 }
@@ -91,16 +91,16 @@ pub enum InterRep {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum StackDirective {
     Variable(String, Type),
-    Str(String, String),
+    Str(String, usize),
     TempLiteral(Type),
     TempReg(Register),
     Empty(u64),
     BasePointer,
 }
 
-use InterRep::*;
 use StackDirective::*;
 use Type::*;
+use IR::*;
 
 impl StackDirective {
     pub fn byte_size(&self) -> u64 {
@@ -116,6 +116,7 @@ impl StackDirective {
     }
 }
 
+#[derive(Clone)]
 pub struct Generator {
     stack: Vec<StackDirective>,
     bp: usize,
@@ -145,10 +146,9 @@ impl Generator {
         for x in &self.stack[self.bp..] {
             if let Str(var, ident) = x {
                 if var.clone() == name {
-                    return Some(Data(ident.to_string()));
+                    return Some(Data(*ident));
                 }
-            }
-            if let Variable(var, t2) = x {
+            } else if let Variable(var, t2) = x {
                 acc -= x.byte_size() as i64;
                 if var.clone() == name {
                     t = Some(t2.clone());
@@ -162,38 +162,32 @@ impl Generator {
         Some(Stack(acc, t?.byte_size()))
     }
 
-    pub fn apply(&mut self, ir: Vec<InterRep>) {
+    pub fn get_variable_clone(&self, name: String) -> Option<Node> {
+        for x in &self.stack[self.bp..] {
+            if let Str(var, ident) = x {
+                if var.clone() == name {
+                    return Some(Node::Str(self.data[*ident].clone()));
+                }
+            } else if let Variable(var, t) = x {
+                if var.clone() == name {
+                    return Some(Node::Literal(t.clone()));
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn apply(&mut self, ir: Vec<IR>) {
         for instruction in ir {
             self.handle_ir(instruction);
         }
     }
 
-    fn handle_ir(&mut self, instr: InterRep) {
+    fn handle_ir(&mut self, instr: IR) {
         match instr {
-            Define(name, value) => {
-                let (ident, s_val) = self.define_node(&value);
-
-                if let Some(string_value) = s_val {
-                    self.data.push(string_value);
-                }
-
-                self.define("main", name, ident)
-            }
-            CCall(name, parameters) => {
-                let mut defined_nodes = vec![];
-
-                for x in &parameters {
-                    let (ident, s_val) = self.define_node(x);
-
-                    if let Some(string_value) = s_val {
-                        self.data.push(string_value)
-                    }
-
-                    defined_nodes.push(ident);
-                }
-
-                self.c_call("main", name, defined_nodes)
-            }
+            Define(name, value) => self.define("main", name, value),
+            CCall(name, parameters) => self.c_call("main", name, parameters),
         }
     }
 
@@ -226,44 +220,65 @@ impl Generator {
         acc
     }
 
-    fn define_node(&mut self, node: &Node) -> (NodeDefined, Option<String>) {
+    fn define_node(&mut self, node: &Node) -> Node {
         match node {
-            Node::Literal(t) => (NodeDefined::Literal(t.clone()), None),
-            Node::Ident(ident) => (
-                NodeDefined::Var(self.get_variable(ident.to_owned()).unwrap()),
-                None,
-            ),
-            Node::Str(s) => match self.data.iter().position(|r| r == s) {
-                Some(n) => (NodeDefined::Var(Data(format!("s{}", n))), None),
-                None => (
-                    NodeDefined::Var(Data(format!("s{}", self.data.len()))),
-                    Some(s.to_owned()),
-                ),
-            },
+            Node::Ident(ident) => self.get_variable_clone(ident.to_owned()).unwrap(),
+            Node::Str(s) => {
+                self.get_str_index(s.to_string());
+                node.clone()
+            }
+            _ => node.clone(),
         }
     }
 
-    fn define(&mut self, function: &str, name: String, value: NodeDefined) {
-        use NodeDefined::*;
+    fn get_str_index_mut(&mut self, string: String) -> usize {
+        match self.data.iter().position(|r| r.clone() == string) {
+            Some(n) => n,
+            None => {
+                self.data.push(string);
+                self.data.len() - 1
+            }
+        }
+    }
 
-        let directive = match value {
-            Var(Register::Data(ident)) => Str(name, ident),
-            Literal(t) => Variable(name, t),
-            _ => panic!(),
-        };
+    fn get_str_index(&self, string: String) -> Option<usize> {
+        self.data.iter().position(|r| r.clone() == string)
+    }
+
+    fn node_stack_directive_rec(&mut self, name: String, node: Node) -> StackDirective {
+        match node {
+            Node::Str(string) => Str(name, self.get_str_index_mut(string)),
+            Node::Literal(t) => Variable(name, t),
+            Node::Ident(ident) => {
+                self.node_stack_directive_rec(name, self.get_variable_clone(ident).unwrap())
+            }
+        }
+    }
+
+    fn define(&mut self, function: &str, name: String, node: Node) {
+        let directive = self.node_stack_directive_rec(name, node);
 
         self.push(function, directive);
     }
 
-    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<NodeDefined>) {
+    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Node>) {
         const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
+        let mut cloned_params = vec![];
 
-        let parameter_stack_size = if parameters.len() > 6 {
-            parameters[5..]
+        for x in &parameters {
+            cloned_params.push(match x {
+                Node::Ident(ident) => self.get_variable_clone(ident.to_string()).unwrap(),
+                _ => x.clone(),
+            });
+        }
+
+        let parameter_stack_size = if cloned_params.len() > 6 {
+            cloned_params[5..]
                 .iter()
                 .map(|x| match x {
-                    NodeDefined::Literal(t) => t.byte_size(),
-                    NodeDefined::Var(r) => r.byte_size(),
+                    Node::Literal(t) => t.byte_size(),
+                    Node::Str(_) => 8,
+                    _ => panic!(),
                 })
                 .sum::<u64>()
                 + 8
@@ -283,18 +298,31 @@ impl Generator {
                 self.push(
                     function,
                     match x {
-                        NodeDefined::Var(r) => TempReg(r.to_owned()),
-                        NodeDefined::Literal(t) => TempLiteral(t.clone()),
+                        Node::Ident(ident) => {
+                            TempReg(self.get_variable(ident.to_string()).unwrap())
+                        }
+                        Node::Str(string) => {
+                            TempReg(Data(self.get_str_index(string.to_string()).unwrap()))
+                        }
+                        Node::Literal(t) => TempLiteral(t.clone()),
                     },
                 );
             } else {
+                let set_reg = vec![match x {
+                    Node::Ident(ident) => mov_reg(
+                        REGSITERS64[i].clone(),
+                        self.get_variable(ident.to_string()).unwrap(),
+                    ),
+                    Node::Literal(t) => mov_type(REGSITERS64[i].clone(), t.clone()),
+                    Node::Str(string) => mov_reg(
+                        REGSITERS64[i].clone(),
+                        Data(self.get_str_index(string.to_string()).unwrap()),
+                    ),
+                }];
                 self.functions
                     .get_mut(&function.to_string())
                     .unwrap()
-                    .extend(vec![match x {
-                        NodeDefined::Var(v) => mov_reg(REGSITERS64[i].clone(), v.to_owned()),
-                        NodeDefined::Literal(t) => mov_type(REGSITERS64[i].clone(), t.clone()),
-                    }])
+                    .extend(set_reg)
             }
         }
 
