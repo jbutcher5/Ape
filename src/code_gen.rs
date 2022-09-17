@@ -65,12 +65,6 @@ pub enum Node {
     Str(String),
 }
 
-#[derive(Clone, Eq, PartialEq, Debug)]
-enum NodeDefined {
-    Literal(Type),
-    Var(Register),
-}
-
 impl Type {
     pub fn byte_size(&self) -> u64 {
         use Type::*;
@@ -218,17 +212,6 @@ impl Generator {
         }
 
         acc
-    }
-
-    fn define_node(&mut self, node: &Node) -> Node {
-        match node {
-            Node::Ident(ident) => self.get_variable_clone(ident.to_owned()).unwrap(),
-            Node::Str(s) => {
-                self.get_str_index(s.to_string());
-                node.clone()
-            }
-            _ => node.clone(),
-        }
     }
 
     fn get_str_index_mut(&mut self, string: String) -> usize {
