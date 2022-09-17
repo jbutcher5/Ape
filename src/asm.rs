@@ -72,7 +72,7 @@ impl Register {
 #[derive(Debug, Clone)]
 pub enum Operand {
     Reg(Register),
-    Value(i64),
+    Value(String),
 }
 
 #[derive(Debug, Clone)]
@@ -157,7 +157,7 @@ impl ToString for Operand {
 
         match self {
             Reg(reg) => reg.to_string(),
-            Value(val) => val.to_string(),
+            Value(val) => val.clone(),
         }
     }
 }

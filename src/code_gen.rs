@@ -12,22 +12,11 @@ fn next_aligned_stack(bytes: u64) -> u64 {
 }
 
 #[inline]
-fn push_type(t: Type, stack_size: u64) -> Vec<Instr> {
-    match t {
-        Int(val) => vec![Mov(RAX, Value(val)), Push(Reg(RAX))],
-        Bool(val) => vec![
-            Sub(RSP, Value(1)),
-            Mov(Stack(-(stack_size as i64), 1), Value(val as i64)),
-        ],
-    }
-}
-
-#[inline]
 fn push_reg(r: Register, size: u64, stack_size: u64) -> Vec<Instr> {
     match size {
         1 => vec![
             Mov(AL, Reg(r)),
-            Sub(RSP, Value(1)),
+            Sub(RSP, Value(1.to_string())),
             Mov(Stack(-(stack_size as i64), 1), Reg(AL)),
         ],
         2 => vec![Mov(AX, Reg(r)), Push(Reg(AX))],
@@ -44,34 +33,25 @@ fn mov_reg(to: Register, from: Register) -> Instr {
     }
 }
 
-#[inline]
-fn mov_type(r: Register, t: Type) -> Instr {
-    match t {
-        Int(val) => Mov(r, Value(val)),
-        Bool(val) => Mov(r, Value(val as i64)),
-    }
-}
-
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Type {
     Int(i64),
     Bool(bool),
+    Str(String),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Node {
     Literal(Type),
     Ident(String),
-    Str(String),
 }
 
 impl Type {
     pub fn byte_size(&self) -> u64 {
-        use Type::*;
-
         match self {
             Int(_) => 8,
             Bool(_) => 1,
+            Str(_) => 8,
         }
     }
 }
@@ -85,27 +65,22 @@ pub enum IR {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum StackDirective {
     Variable(String, Type),
-    Str(String, usize),
     TempLiteral(Type),
     TempReg(Register),
     Empty(u64),
     BasePointer,
 }
 
-use StackDirective::*;
 use Type::*;
 use IR::*;
 
 impl StackDirective {
     pub fn byte_size(&self) -> u64 {
-        use StackDirective::*;
-
         match self {
-            Variable(_, t) | TempLiteral(t) => t.byte_size(),
-            TempReg(r) => r.byte_size(),
-            BasePointer => 8,
-            Empty(n) => *n,
-            Str(..) => 0,
+            StackDirective::Variable(_, t) | StackDirective::TempLiteral(t) => t.byte_size(),
+            StackDirective::TempReg(r) => r.byte_size(),
+            StackDirective::BasePointer => 8,
+            StackDirective::Empty(n) => *n,
         }
     }
 }
@@ -133,16 +108,45 @@ impl Default for Generator {
 }
 
 impl Generator {
+    #[inline]
+    fn push_type(&mut self, t: Type, stack_size: u64) -> Vec<Instr> {
+        match t {
+            Int(val) => vec![Mov(RAX, Value(val.to_string())), Push(Reg(RAX))],
+            Bool(val) => vec![
+                Sub(RSP, Value(1.to_string())),
+                Mov(
+                    Stack(-(stack_size as i64), 1),
+                    Value((val as i64).to_string()),
+                ),
+            ],
+            Str(val) => {
+                let index = self.get_str_index_mut(val);
+                vec![
+                    Sub(RSP, Value(8.to_string())),
+                    Mov(Stack(-(stack_size as i64), 8), Reg(Data(index))),
+                ]
+            }
+        }
+    }
+
+    #[inline]
+    fn mov_type(&mut self, r: Register, t: Type) -> Instr {
+        match t {
+            Int(val) => Mov(r, Value(val.to_string())),
+            Bool(val) => Mov(r, Value((val as i64).to_string())),
+            Str(val) => {
+                let index = self.get_str_index_mut(val);
+                Mov(r, Reg(Data(index)))
+            }
+        }
+    }
+
     pub fn get_variable(&self, name: String) -> Option<Register> {
         let mut acc: i64 = 0;
         let mut t: Option<Type> = None;
 
         for x in &self.stack[self.bp..] {
-            if let Str(var, ident) = x {
-                if var.clone() == name {
-                    return Some(Data(*ident));
-                }
-            } else if let Variable(var, t2) = x {
+            if let StackDirective::Variable(var, t2) = x {
                 acc -= x.byte_size() as i64;
                 if var.clone() == name {
                     t = Some(t2.clone());
@@ -158,11 +162,7 @@ impl Generator {
 
     pub fn get_variable_clone(&self, name: String) -> Option<Node> {
         for x in &self.stack[self.bp..] {
-            if let Str(var, ident) = x {
-                if var.clone() == name {
-                    return Some(Node::Str(self.data[*ident].clone()));
-                }
-            } else if let Variable(var, t) = x {
+            if let StackDirective::Variable(var, t) = x {
                 if var.clone() == name {
                     return Some(Node::Literal(t.clone()));
                 }
@@ -188,24 +188,27 @@ impl Generator {
     fn push(&mut self, function: &str, directive: StackDirective) {
         self.stack.push(directive.clone());
         let scope_size = self.stack_size_from_rbp();
+        let asm = match directive {
+            StackDirective::BasePointer => vec![Push(Reg(RBP))],
+            StackDirective::Variable(_, t) | StackDirective::TempLiteral(t) => {
+                self.push_type(t, scope_size)
+            }
+            StackDirective::TempReg(r) => push_reg(r.clone(), r.byte_size(), scope_size),
+            StackDirective::Empty(n) => vec![Sub(RSP, Value((n as i64).to_string()))],
+            _ => vec![],
+        };
 
         self.functions
             .get_mut(&function.to_string())
             .unwrap()
-            .extend(match directive {
-                BasePointer => vec![Push(Reg(RBP))],
-                Variable(_, t) | TempLiteral(t) => push_type(t, scope_size),
-                TempReg(r) => push_reg(r.clone(), r.byte_size(), scope_size),
-                Empty(n) => vec![Sub(RSP, Value(n as i64))],
-                _ => vec![],
-            })
+            .extend(asm)
     }
 
     fn stack_size_from_rbp(&self) -> u64 {
         let mut acc = 0;
 
         for x in self.stack.iter().rev() {
-            if *x == BasePointer {
+            if *x == StackDirective::BasePointer {
                 break;
             }
             acc += x.byte_size();
@@ -230,8 +233,7 @@ impl Generator {
 
     fn node_stack_directive_rec(&mut self, name: String, node: Node) -> StackDirective {
         match node {
-            Node::Str(string) => Str(name, self.get_str_index_mut(string)),
-            Node::Literal(t) => Variable(name, t),
+            Node::Literal(t) => StackDirective::Variable(name, t),
             Node::Ident(ident) => {
                 self.node_stack_directive_rec(name, self.get_variable_clone(ident).unwrap())
             }
@@ -260,7 +262,6 @@ impl Generator {
                 .iter()
                 .map(|x| match x {
                     Node::Literal(t) => t.byte_size(),
-                    Node::Str(_) => 8,
                     _ => panic!(),
                 })
                 .sum::<u64>()
@@ -273,7 +274,10 @@ impl Generator {
         let next_multiple_of_16 = next_aligned_stack(new_stack_size);
 
         if new_stack_size != next_multiple_of_16 {
-            self.push("main", Empty(next_multiple_of_16 - new_stack_size))
+            self.push(
+                "main",
+                StackDirective::Empty(next_multiple_of_16 - new_stack_size),
+            )
         }
 
         for (i, x) in parameters.iter().enumerate().rev() {
@@ -282,12 +286,9 @@ impl Generator {
                     function,
                     match x {
                         Node::Ident(ident) => {
-                            TempReg(self.get_variable(ident.to_string()).unwrap())
+                            StackDirective::TempReg(self.get_variable(ident.to_string()).unwrap())
                         }
-                        Node::Str(string) => {
-                            TempReg(Data(self.get_str_index(string.to_string()).unwrap()))
-                        }
-                        Node::Literal(t) => TempLiteral(t.clone()),
+                        Node::Literal(t) => StackDirective::TempLiteral(t.clone()),
                     },
                 );
             } else {
@@ -296,11 +297,7 @@ impl Generator {
                         REGSITERS64[i].clone(),
                         self.get_variable(ident.to_string()).unwrap(),
                     ),
-                    Node::Literal(t) => mov_type(REGSITERS64[i].clone(), t.clone()),
-                    Node::Str(string) => mov_reg(
-                        REGSITERS64[i].clone(),
-                        Data(self.get_str_index(string.to_string()).unwrap()),
-                    ),
+                    Node::Literal(t) => self.mov_type(REGSITERS64[i].clone(), t.clone()),
                 }];
                 self.functions
                     .get_mut(&function.to_string())
@@ -319,7 +316,11 @@ impl Generator {
         self.functions
             .get_mut(&"main".to_string())
             .unwrap()
-            .extend(vec![Mov(RAX, Value(60)), Mov(RDI, Value(0)), Syscall]);
+            .extend(vec![
+                Mov(RAX, Value(60.to_string())),
+                Mov(RDI, Value(0.to_string())),
+                Syscall,
+            ]);
     }
 
     pub fn export(&mut self) -> Vec<u8> {
