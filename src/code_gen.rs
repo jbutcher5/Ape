@@ -193,9 +193,8 @@ impl Generator {
                     push_reg(reference, scope_size) // TODO: Check this out later
                 }
             },
-            StackDirective::TempReg(r) => push_reg(r.clone(), scope_size),
+            StackDirective::TempReg(r) => push_reg(r, scope_size),
             StackDirective::Empty(n) => vec![Sub(RSP, Value((n as i64).to_string()))],
-            _ => vec![],
         };
 
         self.functions
@@ -225,10 +224,6 @@ impl Generator {
                 self.data.len() - 1
             }
         }
-    }
-
-    fn get_str_index(&self, string: String) -> Option<usize> {
-        self.data.iter().position(|r| r.clone() == string)
     }
 
     #[inline]
