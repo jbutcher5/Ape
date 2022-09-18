@@ -2,6 +2,6 @@
 
 set -xe
 cargo run
-nasm out.asm -f elf64
-gcc out.o -no-pie
+nasm out.asm -f elf64 -g
+gcc out.o -no-pie -g
 ./a.out
