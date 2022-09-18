@@ -12,17 +12,20 @@ fn next_aligned_stack(bytes: u64) -> u64 {
 }
 
 #[inline]
-fn push_reg(r: Register, size: u64, stack_size: u64) -> Vec<Instr> {
-    match size {
-        1 => vec![
-            Mov(AL, Reg(r)),
-            Sub(RSP, Value(1.to_string())),
-            Mov(Stack(-(stack_size as i64), 1), Reg(AL)),
-        ],
-        2 => vec![Mov(AX, Reg(r)), Push(Reg(AX))],
-        4 => vec![Mov(EAX, Reg(r)), Push(Reg(EAX))],
-        _ => vec![Mov(RAX, Reg(r)), Push(Reg(RAX))],
-    }
+fn push_reg(r: Register, stack_size: u64) -> Vec<Instr> {
+    let temp_reg = match r.byte_size() {
+        1 => AL,
+        2 => AX,
+        4 => EAX,
+        8 => RAX,
+        _ => panic!("Unknown register for byte size"),
+    };
+
+    vec![
+        Sub(RSP, Value(r.byte_size().to_string())),
+        Mov(temp_reg.clone(), Reg(r.clone())),
+        Mov(Stack(-(stack_size as i64), r.byte_size()), Reg(temp_reg)),
+    ]
 }
 
 #[inline]
@@ -64,7 +67,7 @@ pub enum IR {
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum StackDirective {
-    Variable(String, Type),
+    Variable(String, Node),
     TempLiteral(Type),
     TempReg(Register),
     Empty(u64),
@@ -73,17 +76,6 @@ pub enum StackDirective {
 
 use Type::*;
 use IR::*;
-
-impl StackDirective {
-    pub fn byte_size(&self) -> u64 {
-        match self {
-            StackDirective::Variable(_, t) | StackDirective::TempLiteral(t) => t.byte_size(),
-            StackDirective::TempReg(r) => r.byte_size(),
-            StackDirective::BasePointer => 8,
-            StackDirective::Empty(n) => *n,
-        }
-    }
-}
 
 #[derive(Clone)]
 pub struct Generator {
@@ -143,28 +135,31 @@ impl Generator {
 
     pub fn get_variable(&self, name: String) -> Option<Register> {
         let mut acc: i64 = 0;
-        let mut t: Option<Type> = None;
+        let mut t: Option<u64> = None;
 
         for x in &self.stack[self.bp..] {
             if let StackDirective::Variable(var, t2) = x {
-                acc -= x.byte_size() as i64;
+                acc -= self.directive_byte_size(x) as i64;
                 if var.clone() == name {
-                    t = Some(t2.clone());
+                    t = Some(self.node_byte_size(t2));
                     break;
                 }
             } else {
-                acc -= x.byte_size() as i64;
+                acc -= self.directive_byte_size(x) as i64;
             }
         }
 
-        Some(Stack(acc, t?.byte_size()))
+        Some(Stack(acc, t?))
     }
 
     pub fn get_variable_clone(&self, name: String) -> Option<Node> {
         for x in &self.stack[self.bp..] {
-            if let StackDirective::Variable(var, t) = x {
+            if let StackDirective::Variable(var, node) = x {
                 if var.clone() == name {
-                    return Some(Node::Literal(t.clone()));
+                    return Some(match node {
+                        Node::Literal(_) => node.clone(),
+                        Node::Ident(ident) => self.get_variable_clone(ident.to_string())?,
+                    });
                 }
             }
         }
@@ -190,10 +185,15 @@ impl Generator {
         let scope_size = self.stack_size_from_rbp();
         let asm = match directive {
             StackDirective::BasePointer => vec![Push(Reg(RBP))],
-            StackDirective::Variable(_, t) | StackDirective::TempLiteral(t) => {
-                self.push_type(t, scope_size)
-            }
-            StackDirective::TempReg(r) => push_reg(r.clone(), r.byte_size(), scope_size),
+            StackDirective::TempLiteral(t) => self.push_type(t, scope_size),
+            StackDirective::Variable(_, node) => match node {
+                Node::Literal(t) => self.push_type(t, scope_size),
+                Node::Ident(ident) => {
+                    let reference = self.get_variable(ident).unwrap();
+                    push_reg(reference, scope_size) // TODO: Check this out later
+                }
+            },
+            StackDirective::TempReg(r) => push_reg(r.clone(), scope_size),
             StackDirective::Empty(n) => vec![Sub(RSP, Value((n as i64).to_string()))],
             _ => vec![],
         };
@@ -211,7 +211,7 @@ impl Generator {
             if *x == StackDirective::BasePointer {
                 break;
             }
-            acc += x.byte_size();
+            acc += self.directive_byte_size(x);
         }
 
         acc
@@ -231,19 +231,29 @@ impl Generator {
         self.data.iter().position(|r| r.clone() == string)
     }
 
-    fn node_stack_directive_rec(&mut self, name: String, node: Node) -> StackDirective {
+    #[inline]
+    fn node_byte_size(&self, node: &Node) -> u64 {
         match node {
-            Node::Literal(t) => StackDirective::Variable(name, t),
+            Node::Literal(t) => t.byte_size(),
             Node::Ident(ident) => {
-                self.node_stack_directive_rec(name, self.get_variable_clone(ident).unwrap())
+                self.node_byte_size(&self.get_variable_clone(ident.to_string()).unwrap())
             }
         }
     }
 
-    fn define(&mut self, function: &str, name: String, node: Node) {
-        let directive = self.node_stack_directive_rec(name, node);
+    #[inline]
+    fn directive_byte_size(&self, directive: &StackDirective) -> u64 {
+        match directive {
+            StackDirective::TempLiteral(t) => t.byte_size(),
+            StackDirective::Variable(_, node) => self.node_byte_size(node),
+            StackDirective::TempReg(r) => r.byte_size(),
+            StackDirective::BasePointer => 8,
+            StackDirective::Empty(n) => *n,
+        }
+    }
 
-        self.push(function, directive);
+    fn define(&mut self, function: &str, name: String, node: Node) {
+        self.push(function, StackDirective::Variable(name, node));
     }
 
     fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Node>) {
