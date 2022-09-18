@@ -346,7 +346,7 @@ impl Generator {
 
         buffer.extend(b"\nsection .data\n");
         for (i, v) in self.data.iter().enumerate() {
-            buffer.extend(format!("    s{}: db {}\n", i, v).as_bytes());
+            buffer.extend(format!("    s{}: db `{}`\n", i, v).as_bytes());
         }
 
         buffer
