@@ -86,6 +86,7 @@ pub enum Instr {
     NullReg(Register),
     Add(Register, Operand),
     Sub(Register, Operand),
+    Lea(Register, Register),
     Return,
     Syscall,
 }
@@ -168,6 +169,7 @@ impl ToString for Instr {
 
         match self {
             Movzx(reg1, reg2) => format!("movzx {}, {}", reg1.to_string(), reg2.to_string()),
+            Lea(reg1, reg2) => format!("lea {}, {}", reg1.to_string(), reg2.to_string()),
             Push(reg) => format!("push {}", reg.to_string()),
             Pop(reg) => format!("pop {}", reg.to_string()),
             Mov(reg, op) => format!("mov {}, {}", reg.to_string(), op.to_string()),

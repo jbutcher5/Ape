@@ -18,7 +18,7 @@ fn push_reg(r: Register, stack_size: u64) -> Vec<Instr> {
         2 => AX,
         4 => EAX,
         8 => RAX,
-        _ => panic!("Unknown register for byte size"),
+        _ => panic!("Unknown register for byte size {}", r.byte_size()),
     };
 
     vec![
@@ -36,17 +36,33 @@ fn mov_reg(to: Register, from: Register) -> Instr {
     }
 }
 
+#[inline]
+fn reference_reg(to: Register, from: Register) -> Vec<Instr> {
+    vec![Lea(RAX, from), mov_reg(to, RAX)]
+}
+
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Type {
     Int(i64),
     Bool(bool),
     Str(String),
+    Array(Vec<Type>),
+    Pointer(Register, ReferenceType),
+}
+
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub enum ReferenceType {
+    Int,
+    Bool,
+    Str,
+    Array,
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Node {
     Literal(Type),
     Ident(String),
+    Ref(String),
 }
 
 impl Type {
@@ -55,6 +71,8 @@ impl Type {
             Int(_) => 8,
             Bool(_) => 1,
             Str(_) => 8,
+            Array(arr) => arr[0].byte_size() * arr.len() as u64,
+            Pointer(_, _) => 8,
         }
     }
 }
@@ -100,15 +118,18 @@ impl Default for Generator {
 }
 
 impl Generator {
-    #[inline]
-    fn push_type(&mut self, t: Type, stack_size: u64) -> Vec<Instr> {
+    fn push_type(&mut self, t: &Type, stack_offset: u64) -> Vec<Instr> {
+        let stack_size: u64 = self.stack_size_from_rbp() + stack_offset;
         match t {
-            Int(val) => vec![Mov(RAX, Value(val.to_string())), Push(Reg(RAX))],
+            Int(val) => vec![
+                Sub(RSP, Value(8.to_string())),
+                Mov(Stack(-(stack_size as i64), 8), Value(val.to_string())),
+            ],
             Bool(val) => vec![
                 Sub(RSP, Value(1.to_string())),
                 Mov(
                     Stack(-(stack_size as i64), 1),
-                    Value((val as i64).to_string()),
+                    Value((val.clone() as i64).to_string()),
                 ),
             ],
             Str(val) => {
@@ -118,6 +139,17 @@ impl Generator {
                     Mov(Stack(-(stack_size as i64), 8), Reg(Data(index))),
                 ]
             }
+            Array(array) => array
+                .iter()
+                .enumerate()
+                .map(|(i, element)| self.push_type(element, (i as u64) * element.byte_size()))
+                .collect::<Vec<Vec<Instr>>>()
+                .concat(),
+            Pointer(r, _) => vec![
+                vec![Sub(RSP, Value(8.to_string()))],
+                reference_reg(Stack(-(stack_size as i64), 8), r.clone()),
+            ]
+            .concat(),
         }
     }
 
@@ -127,9 +159,10 @@ impl Generator {
             Int(val) => Mov(r, Value(val.to_string())),
             Bool(val) => Mov(r, Value((val as i64).to_string())),
             Str(val) => {
-                let index = self.get_str_index_mut(val);
+                let index = self.get_str_index_mut(&val);
                 Mov(r, Reg(Data(index)))
             }
+            _ => panic!("The type {:?} can not be copied.", t),
         }
     }
 
@@ -139,26 +172,31 @@ impl Generator {
 
         for x in &self.stack[self.bp..] {
             if let StackDirective::Variable(var, t2) = x {
-                acc -= self.directive_byte_size(x) as i64;
                 if var.clone() == name {
-                    t = Some(self.node_byte_size(t2));
+                    t = Some(self.node_byte_size(t2, true));
                     break;
+                } else {
+                    acc -= self.directive_byte_size(x, false) as i64;
                 }
             } else {
-                acc -= self.directive_byte_size(x) as i64;
+                acc -= self.directive_byte_size(x, false) as i64;
             }
         }
 
         Some(Stack(acc, t?))
     }
 
-    pub fn get_variable_clone(&self, name: String) -> Option<Node> {
+    pub fn get_variable_clone(&self, name: &String, get_ref: bool) -> Option<Node> {
         for x in &self.stack[self.bp..] {
             if let StackDirective::Variable(var, node) = x {
-                if var.clone() == name {
-                    return Some(match node {
-                        Node::Literal(_) => node.clone(),
-                        Node::Ident(ident) => self.get_variable_clone(ident.to_string())?,
+                if var == name {
+                    return Some(match (node, get_ref) {
+                        (Node::Literal(Array(_)), true) => Node::Literal(Pointer(
+                            self.get_variable(name.to_string()).unwrap(),
+                            ReferenceType::Int,
+                        )),
+                        (Node::Literal(_) | Node::Ref(_), _) => node.clone(),
+                        (Node::Ident(ident), _) => self.get_variable_clone(ident, get_ref)?,
                     });
                 }
             }
@@ -181,21 +219,26 @@ impl Generator {
     }
 
     fn push(&mut self, function: &str, directive: StackDirective) {
-        self.stack.push(directive.clone());
         let scope_size = self.stack_size_from_rbp();
-        let asm = match directive {
+        let asm = match directive.clone() {
             StackDirective::BasePointer => vec![Push(Reg(RBP))],
-            StackDirective::TempLiteral(t) => self.push_type(t, scope_size),
+            StackDirective::TempLiteral(t) => self.push_type(&t, 0),
             StackDirective::Variable(_, node) => match node {
-                Node::Literal(t) => self.push_type(t, scope_size),
+                Node::Literal(t) => self.push_type(&t, 0),
                 Node::Ident(ident) => {
                     let reference = self.get_variable(ident).unwrap();
-                    push_reg(reference, scope_size) // TODO: Check this out later
+                    push_reg(reference, scope_size)
                 }
+                Node::Ref(ident) => self.push_type(
+                    &Pointer(self.get_variable(ident).unwrap(), ReferenceType::Int), // TODO: Update reference type
+                    0,
+                ),
             },
             StackDirective::TempReg(r) => push_reg(r, scope_size),
             StackDirective::Empty(n) => vec![Sub(RSP, Value((n as i64).to_string()))],
         };
+
+        self.stack.push(directive);
 
         self.functions
             .get_mut(&function.to_string())
@@ -209,38 +252,46 @@ impl Generator {
         for x in self.stack.iter().rev() {
             if *x == StackDirective::BasePointer {
                 break;
+            } else if let StackDirective::Variable(_, Node::Literal(Array(arr))) = x {
+                acc += arr[0].byte_size() * arr.len() as u64;
+            } else {
+                acc += self.directive_byte_size(x, true);
             }
-            acc += self.directive_byte_size(x);
         }
+
+        println!("Final: {}", acc);
 
         acc
     }
 
-    fn get_str_index_mut(&mut self, string: String) -> usize {
-        match self.data.iter().position(|r| r.clone() == string) {
+    fn get_str_index_mut(&mut self, string: &String) -> usize {
+        match self.data.iter().position(|r| r == string) {
             Some(n) => n,
             None => {
-                self.data.push(string);
+                self.data.push(string.to_string());
                 self.data.len() - 1
             }
         }
     }
 
     #[inline]
-    fn node_byte_size(&self, node: &Node) -> u64 {
-        match node {
-            Node::Literal(t) => t.byte_size(),
-            Node::Ident(ident) => {
-                self.node_byte_size(&self.get_variable_clone(ident.to_string()).unwrap())
-            }
+    fn node_byte_size(&self, node: &Node, ident_ref: bool) -> u64 {
+        match (node, ident_ref) {
+            (Node::Literal(Array(_)), true) => 8,
+            (Node::Literal(t), _) => t.byte_size(),
+            (Node::Ident(ident), _) => self.node_byte_size(
+                &self.get_variable_clone(ident, ident_ref).unwrap(),
+                ident_ref,
+            ),
+            (Node::Ref(_), _) => 8,
         }
     }
 
     #[inline]
-    fn directive_byte_size(&self, directive: &StackDirective) -> u64 {
+    fn directive_byte_size(&self, directive: &StackDirective, arr_ref: bool) -> u64 {
         match directive {
             StackDirective::TempLiteral(t) => t.byte_size(),
-            StackDirective::Variable(_, node) => self.node_byte_size(node),
+            StackDirective::Variable(_, node) => self.node_byte_size(node, arr_ref),
             StackDirective::TempReg(r) => r.byte_size(),
             StackDirective::BasePointer => 8,
             StackDirective::Empty(n) => *n,
@@ -257,7 +308,7 @@ impl Generator {
 
         for x in &parameters {
             cloned_params.push(match x {
-                Node::Ident(ident) => self.get_variable_clone(ident.to_string()).unwrap(),
+                Node::Ident(ident) => self.get_variable_clone(ident, true).unwrap(),
                 _ => x.clone(),
             });
         }
@@ -270,7 +321,6 @@ impl Generator {
                     _ => panic!(),
                 })
                 .sum::<u64>()
-                + 8
         } else {
             8
         };
@@ -294,16 +344,26 @@ impl Generator {
                             StackDirective::TempReg(self.get_variable(ident.to_string()).unwrap())
                         }
                         Node::Literal(t) => StackDirective::TempLiteral(t.clone()),
+                        Node::Ref(ident) => StackDirective::TempLiteral(Pointer(
+                            self.get_variable(ident.to_string()).unwrap(),
+                            ReferenceType::Int,
+                        )), // TODO: Do stuff for other types here
                     },
                 );
             } else {
-                let set_reg = vec![match x {
-                    Node::Ident(ident) => mov_reg(
+                let set_reg = match x {
+                    Node::Ident(ident) => {
+                        vec![mov_reg(
+                            REGSITERS64[i].clone(),
+                            self.get_variable(ident.to_string()).unwrap(),
+                        )]
+                    }
+                    Node::Literal(t) => vec![self.mov_type(REGSITERS64[i].clone(), t.clone())],
+                    Node::Ref(ident) => reference_reg(
                         REGSITERS64[i].clone(),
                         self.get_variable(ident.to_string()).unwrap(),
                     ),
-                    Node::Literal(t) => self.mov_type(REGSITERS64[i].clone(), t.clone()),
-                }];
+                };
                 self.functions
                     .get_mut(&function.to_string())
                     .unwrap()
