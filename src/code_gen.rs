@@ -369,12 +369,15 @@ impl Generator {
                 );
             } else {
                 let set_reg = match x {
-                    Node::Ident(ident) => {
-                        vec![mov_reg(
+                    Node::Ident(ident) => match self.get_variable_clone(ident, true).unwrap() {
+                        Node::Literal(Pointer(address, _)) => {
+                            reference_reg(REGSITERS64[i].clone(), address)
+                        }
+                        _ => vec![mov_reg(
                             REGSITERS64[i].clone(),
                             self.get_variable(ident.to_string()).unwrap(),
-                        )]
-                    }
+                        )],
+                    },
                     Node::Literal(t) => vec![self.mov_type(REGSITERS64[i].clone(), t.clone())],
                     Node::Ref(ident) => reference_reg(
                         REGSITERS64[i].clone(),

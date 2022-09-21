@@ -16,7 +16,7 @@ fn main() -> io::Result<()> {
         Define("z".to_string(), Ident("y".to_string())),
         CCall(
             "printf".to_string(),
-            vec![Literal(Str(r"%d\n".to_string())), Ident("z".to_string())],
+            vec![Literal(Str(r"%d\n".to_string())), Ident("y".to_string())],
         ),
     ]);
 
