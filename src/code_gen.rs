@@ -50,7 +50,7 @@ pub enum Type {
     Pointer(Register, ReferenceType),
 }
 
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum ReferenceType {
     Int,
     Bool,
@@ -73,6 +73,16 @@ impl Type {
             Str(_) => 8,
             Array(arr) => arr[0].byte_size() * arr.len() as u64,
             Pointer(_, _) => 8,
+        }
+    }
+
+    pub fn get_ref_type(&self) -> ReferenceType {
+        match self {
+            Int(_) => ReferenceType::Int,
+            Bool(_) => ReferenceType::Bool,
+            Str(_) => ReferenceType::Str,
+            Array(_) => ReferenceType::Array,
+            Pointer(_, ref_type) => *ref_type,
         }
     }
 }
@@ -191,9 +201,9 @@ impl Generator {
             if let StackDirective::Variable(var, node) = x {
                 if var == name {
                     return Some(match (node, get_ref) {
-                        (Node::Literal(Array(_)), true) => Node::Literal(Pointer(
+                        (Node::Literal(Array(arr)), true) => Node::Literal(Pointer(
                             self.get_variable(name.to_string()).unwrap(),
-                            ReferenceType::Int,
+                            arr[0].get_ref_type(),
                         )),
                         (Node::Literal(_) | Node::Ref(_), _) => node.clone(),
                         (Node::Ident(ident), _) => self.get_variable_clone(ident, get_ref)?,
@@ -230,7 +240,13 @@ impl Generator {
                     push_reg(reference, scope_size)
                 }
                 Node::Ref(ident) => self.push_type(
-                    &Pointer(self.get_variable(ident).unwrap(), ReferenceType::Int), // TODO: Update reference type
+                    &Pointer(
+                        self.get_variable(ident.clone()).unwrap(),
+                        match self.get_variable_clone(&ident, true).unwrap() {
+                            Node::Literal(t) => t.get_ref_type(),
+                            _ => panic!("Cannot derive a type from a reference"),
+                        },
+                    ),
                     0,
                 ),
             },
@@ -258,8 +274,6 @@ impl Generator {
                 acc += self.directive_byte_size(x, true);
             }
         }
-
-        println!("Final: {}", acc);
 
         acc
     }
@@ -346,8 +360,11 @@ impl Generator {
                         Node::Literal(t) => StackDirective::TempLiteral(t.clone()),
                         Node::Ref(ident) => StackDirective::TempLiteral(Pointer(
                             self.get_variable(ident.to_string()).unwrap(),
-                            ReferenceType::Int,
-                        )), // TODO: Do stuff for other types here
+                            match self.get_variable_clone(&ident, true).unwrap() {
+                                Node::Literal(t) => t.get_ref_type(),
+                                _ => panic!("Cannot derive a type from a reference"),
+                            },
+                        )),
                     },
                 );
             } else {
