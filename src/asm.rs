@@ -101,7 +101,9 @@ impl ToString for Register {
             RW(n) => format!("r{n}w"),
             RB(n) => format!("r{n}b"),
             Stack(i, size) => {
-                if i >= &0 {
+                if i == &0 {
+                    format!("{} [rbp]", name_size(size))
+                } else if i > &0 {
                     format!("{} [rbp+{}]", name_size(size), i)
                 } else {
                     format!("{} [rbp{}]", name_size(size), i)
