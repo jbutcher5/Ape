@@ -196,17 +196,38 @@ impl Generator {
         Some(Stack(acc, t?))
     }
 
-    pub fn get_variable_clone(&self, name: &String, get_ref: bool) -> Option<Node> {
+    pub fn get_variable_clone(&self, name: &String) -> Option<Node> {
         for x in &self.stack[self.bp..] {
             if let StackDirective::Variable(var, node) = x {
                 if var == name {
-                    return Some(match (node, get_ref) {
-                        (Node::Literal(Array(arr)), true) => Node::Literal(Pointer(
-                            self.get_variable(name.to_string()).unwrap(),
-                            arr[0].get_ref_type(),
-                        )),
-                        (Node::Literal(_) | Node::Ref(_), _) => node.clone(),
-                        (Node::Ident(ident), _) => self.get_variable_clone(ident, get_ref)?,
+                    return Some(match node {
+                        Node::Literal(_) | Node::Ref(_) => node.clone(),
+                        Node::Ident(ident) => self.get_variable_clone(ident)?,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn get_reference(&self, name: &String) -> Option<Type> {
+        for x in &self.stack[self.bp..] {
+            if let StackDirective::Variable(ident, node) = x {
+                if ident == name {
+                    return Some(match node {
+                        Node::Literal(Array(arr)) => {
+                            Pointer(self.get_variable(name.to_string())?, arr[0].get_ref_type())
+                        }
+                        Node::Literal(t) => t.clone(),
+                        Node::Ident(node_ident) => self.get_reference(node_ident)?,
+                        Node::Ref(ref_ident) => Pointer(
+                            self.get_variable(ref_ident.to_string())?,
+                            match self.get_variable_clone(ref_ident)? {
+                                Node::Literal(t) => t.get_ref_type(),
+                                _ => panic!("Cannot derive a type from a reference"),
+                            },
+                        ),
                     });
                 }
             }
@@ -242,10 +263,7 @@ impl Generator {
                 Node::Ref(ident) => self.push_type(
                     &Pointer(
                         self.get_variable(ident.clone()).unwrap(),
-                        match self.get_variable_clone(&ident, true).unwrap() {
-                            Node::Literal(t) => t.get_ref_type(),
-                            _ => panic!("Cannot derive a type from a reference"),
-                        },
+                        self.get_reference(&ident).unwrap().get_ref_type(),
                     ),
                     0,
                 ),
@@ -293,10 +311,18 @@ impl Generator {
         match (node, ident_ref) {
             (Node::Literal(Array(_)), true) => 8,
             (Node::Literal(t), _) => t.byte_size(),
-            (Node::Ident(ident), _) => self.node_byte_size(
-                &self.get_variable_clone(ident, ident_ref).unwrap(),
-                ident_ref,
-            ),
+            (Node::Ident(ident), _) => {
+                let cloned_variable = self.get_variable_clone(ident).unwrap();
+
+                self.node_byte_size(
+                    if ident_ref {
+                        return self.get_reference(ident).unwrap().byte_size();
+                    } else {
+                        &cloned_variable
+                    },
+                    ident_ref,
+                )
+            }
             (Node::Ref(_), _) => 8,
         }
     }
@@ -322,7 +348,7 @@ impl Generator {
 
         for x in &parameters {
             cloned_params.push(match x {
-                Node::Ident(ident) => self.get_variable_clone(ident, true).unwrap(),
+                Node::Ident(ident) => Node::Literal(self.get_reference(ident).unwrap()),
                 _ => x.clone(),
             });
         }
@@ -360,19 +386,14 @@ impl Generator {
                         Node::Literal(t) => StackDirective::TempLiteral(t.clone()),
                         Node::Ref(ident) => StackDirective::TempLiteral(Pointer(
                             self.get_variable(ident.to_string()).unwrap(),
-                            match self.get_variable_clone(&ident, true).unwrap() {
-                                Node::Literal(t) => t.get_ref_type(),
-                                _ => panic!("Cannot derive a type from a reference"),
-                            },
+                            self.get_reference(&ident).unwrap().get_ref_type(),
                         )),
                     },
                 );
             } else {
                 let set_reg = match x {
-                    Node::Ident(ident) => match self.get_variable_clone(ident, true).unwrap() {
-                        Node::Literal(Pointer(address, _)) => {
-                            reference_reg(REGSITERS64[i].clone(), address)
-                        }
+                    Node::Ident(ident) => match self.get_reference(&ident).unwrap() {
+                        Pointer(address, _) => reference_reg(REGSITERS64[i].clone(), address),
                         _ => vec![mov_reg(
                             REGSITERS64[i].clone(),
                             self.get_variable(ident.to_string()).unwrap(),
