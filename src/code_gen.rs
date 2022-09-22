@@ -176,7 +176,7 @@ impl Generator {
         }
     }
 
-    pub fn get_variable(&self, name: String) -> Option<Register> {
+    pub fn get_address(&self, name: String) -> Option<Register> {
         let mut acc: i64 = 0;
         let mut t: Option<u64> = None;
 
@@ -217,12 +217,12 @@ impl Generator {
                 if ident == name {
                     return Some(match node {
                         Node::Literal(Array(arr)) => {
-                            Pointer(self.get_variable(name.to_string())?, arr[0].get_ref_type())
+                            Pointer(self.get_address(name.to_string())?, arr[0].get_ref_type())
                         }
                         Node::Literal(t) => t.clone(),
                         Node::Ident(node_ident) => self.get_reference(node_ident)?,
                         Node::Ref(ref_ident) => Pointer(
-                            self.get_variable(ref_ident.to_string())?,
+                            self.get_address(ref_ident.to_string())?,
                             match self.get_variable_clone(ref_ident)? {
                                 Node::Literal(t) => t.get_ref_type(),
                                 _ => panic!("Cannot derive a type from a reference"),
@@ -257,12 +257,12 @@ impl Generator {
             StackDirective::Variable(_, node) => match node {
                 Node::Literal(t) => self.push_type(&t, 0),
                 Node::Ident(ident) => {
-                    let reference = self.get_variable(ident).unwrap();
+                    let reference = self.get_address(ident).unwrap();
                     push_reg(reference, scope_size)
                 }
                 Node::Ref(ident) => self.push_type(
                     &Pointer(
-                        self.get_variable(ident.clone()).unwrap(),
+                        self.get_address(ident.clone()).unwrap(),
                         self.get_reference(&ident).unwrap().get_ref_type(),
                     ),
                     0,
@@ -381,11 +381,11 @@ impl Generator {
                     function,
                     match x {
                         Node::Ident(ident) => {
-                            StackDirective::TempReg(self.get_variable(ident.to_string()).unwrap())
+                            StackDirective::TempReg(self.get_address(ident.to_string()).unwrap())
                         }
                         Node::Literal(t) => StackDirective::TempLiteral(t.clone()),
                         Node::Ref(ident) => StackDirective::TempLiteral(Pointer(
-                            self.get_variable(ident.to_string()).unwrap(),
+                            self.get_address(ident.to_string()).unwrap(),
                             self.get_reference(&ident).unwrap().get_ref_type(),
                         )),
                     },
@@ -396,13 +396,13 @@ impl Generator {
                         Pointer(address, _) => reference_reg(REGSITERS64[i].clone(), address),
                         _ => vec![mov_reg(
                             REGSITERS64[i].clone(),
-                            self.get_variable(ident.to_string()).unwrap(),
+                            self.get_address(ident.to_string()).unwrap(),
                         )],
                     },
                     Node::Literal(t) => vec![self.mov_type(REGSITERS64[i].clone(), t.clone())],
                     Node::Ref(ident) => reference_reg(
                         REGSITERS64[i].clone(),
-                        self.get_variable(ident.to_string()).unwrap(),
+                        self.get_address(ident.to_string()).unwrap(),
                     ),
                 };
                 self.functions
