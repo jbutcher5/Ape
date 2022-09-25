@@ -26,6 +26,8 @@ pub enum Node {
     Literal(Type),
     Ident(String),
     Ref(String),
+    Define(String, Box<Node>),
+    CCall(String, Vec<Node>),
 }
 
 pub trait ByteSize {
@@ -71,12 +73,6 @@ impl ByteSize for VariableContent {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum IR {
-    Define(String, Node),
-    CCall(String, Vec<Node>),
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VariableContent {
     Ident(String, ReferenceType),
@@ -102,8 +98,8 @@ pub enum StackDirective {
     BasePointer,
 }
 
+use Node::*;
 use ReferenceType::*;
-use IR::*;
 
 #[derive(Clone)]
 pub struct Generator {
@@ -240,19 +236,21 @@ impl Generator {
             Node::Ref(ident) => {
                 VariableContent::Literal(Pointer(Box::new(self.get_reference_type(ident)?)))
             }
+            _ => panic!(), // TODO: Handle Define and CCall here
         })
     }
 
-    pub fn apply(&mut self, ir: Vec<IR>) {
-        for instruction in ir {
-            self.handle_ir(instruction);
+    pub fn apply(&mut self, nodes: Vec<Node>) {
+        for node in nodes {
+            self.handle_node(node);
         }
     }
 
-    fn handle_ir(&mut self, instr: IR) {
-        match instr {
-            Define(name, value) => self.define("main", name, value),
-            CCall(name, parameters) => self.c_call("main", name, parameters),
+    fn handle_node(&mut self, node: Node) {
+        if let Node::Define(name, value) = node {
+            self.define("main", name, *value);
+        } else if let Node::CCall(name, parameters) = node {
+            self.c_call("main", name, parameters);
         }
     }
 
@@ -301,11 +299,11 @@ impl Generator {
     #[inline]
     fn define(&mut self, function: &str, name: String, node: Node) {
         let asm: (Vec<Instr>, StackDirective) = match node {
-            Node::Literal(ref t) => (
+            Literal(ref t) => (
                 self.push_type(&t, 0),
                 StackDirective::Variable(name, self.node_as_var_content(&node).unwrap()),
             ),
-            Node::Ident(ref ident) => {
+            Ident(ref ident) => {
                 let reg = self.get_address_reference(ident.to_string()).unwrap();
                 (
                     push_reg(reg, self.stack_size_from_rbp()),
@@ -318,7 +316,7 @@ impl Generator {
                     ),
                 )
             }
-            Node::Ref(ref ident) => {
+            Ref(ref ident) => {
                 let var_content = self.node_as_var_content(&node).unwrap();
                 (
                     self.push_type(
@@ -331,6 +329,14 @@ impl Generator {
                     StackDirective::Variable(name, var_content),
                 )
             }
+            CCall(c_func, parameters) => {
+                self.c_call(function, c_func, parameters);
+                (
+                    push_reg(RAX, self.stack_size_from_rbp()),
+                    StackDirective::Variable(name, VariableContent::Literal(Int)),
+                ) // TODO: Determine return type of each C function
+            }
+            _ => panic!("Node can not be used in a define."),
         };
 
         self.stack.push(asm.1);
@@ -342,7 +348,7 @@ impl Generator {
         let mut cloned_params_size = vec![];
 
         for x in &parameters {
-            cloned_params_size.push(self.node_byte_size(x));
+            cloned_params_size.push(self.node_byte_size(x)); //TODO: C calls will error here as their result type size is unknown
         }
 
         let parameter_stack_size = if cloned_params_size.len() > 6 {
@@ -392,6 +398,14 @@ impl Generator {
                             StackDirective::TempLiteral(var_content),
                         )
                     }
+                    CCall(c_func, parameters) => {
+                        self.c_call(function, c_func.to_string(), parameters.to_vec());
+                        (
+                            push_reg(RAX, self.stack_size_from_rbp()),
+                            StackDirective::TempLiteral(VariableContent::Literal(Int)),
+                        ) // TODO: Determine return type of each C function
+                    }
+                    _ => panic!("Node can not be used as a parameter."),
                 };
 
                 self.stack.push(asm.1);
@@ -413,6 +427,11 @@ impl Generator {
                         REGSITERS64[i].clone(),
                         self.get_address(ident.to_string()).unwrap(),
                     ),
+                    CCall(c_func, parameters) => {
+                        self.c_call(function, c_func.to_string(), parameters.to_vec());
+                        vec![mov_reg(REGSITERS64[i].clone(), RAX)] // TODO: Determine return type of each C function
+                    }
+                    _ => panic!("Node can not be used as a parameter."),
                 };
                 self.functions
                     .get_mut(&function.to_string())
