@@ -89,6 +89,25 @@ pub enum Instr {
     Lea(Register, Register),
     Return,
     Syscall,
+    Cmp(Operand, Operand),
+    DefineLabel(Label),
+    Jmp(Label),
+    Je(Label),
+}
+
+#[derive(Debug, Clone)]
+pub enum Label {
+    Named(String),
+    Numbered(u64),
+}
+
+impl ToString for Label {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Named(string) => format!("{string}"),
+            Self::Numbered(n) => format!(".L{n}"),
+        }
+    }
 }
 
 impl ToString for Register {
@@ -182,6 +201,50 @@ impl ToString for Instr {
             Return => "ret".to_string(),
             Syscall => "syscall".to_string(),
             Raw(string) => string.to_string(),
+            DefineLabel(label) => format!("{}:", label.to_string()),
+            Jmp(label) => format!("jmp {}", label.to_string()),
+            Je(label) => format!("je {}", label.to_string()),
+            Cmp(op1, op2) => format!("cmp {} {}", op1.to_string(), op2.to_string()),
         }
     }
+}
+
+use {Instr::*, Operand::*, Register::*};
+
+#[inline]
+pub fn next_aligned_stack(bytes: u64) -> u64 {
+    match bytes {
+        0 => 16,
+        start => (start as f64 / 16.0).ceil() as u64 * 16,
+    }
+}
+
+#[inline]
+pub fn push_reg(r: Register, stack_size: u64) -> Vec<Instr> {
+    let temp_reg = match r.byte_size() {
+        1 => AL,
+        2 => AX,
+        4 => EAX,
+        8 => RAX,
+        _ => panic!("Unknown register for byte size {}", r.byte_size()),
+    };
+
+    vec![
+        Sub(RSP, Value(r.byte_size().to_string())),
+        Mov(temp_reg.clone(), Reg(r.clone())),
+        Mov(Stack(-(stack_size as i64), r.byte_size()), Reg(temp_reg)),
+    ]
+}
+
+#[inline]
+pub fn mov_reg(to: Register, from: Register) -> Instr {
+    match (to.byte_size(), from.byte_size()) {
+        (8, 1) => Movzx(to, from),
+        _ => Mov(to, Reg(from)),
+    }
+}
+
+#[inline]
+pub fn reference_reg(to: Register, from: Register) -> Vec<Instr> {
+    vec![Lea(RAX, from), mov_reg(to, RAX)]
 }
