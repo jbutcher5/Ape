@@ -443,7 +443,7 @@ impl Generator {
         self.functions
             .get_mut(&function.to_string())
             .unwrap()
-            .push(Call(c_func));
+            .extend(vec![Mov(RAX, Value(0.to_string())), Call(c_func)]);
     }
 
     fn write_exit(&mut self) {
