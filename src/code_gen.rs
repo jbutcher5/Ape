@@ -28,6 +28,7 @@ pub enum Node {
     Ref(String),
     Define(String, Box<Node>),
     CCall(String, Vec<Node>),
+    Extern(String, Vec<ReferenceType>),
 }
 
 pub trait ByteSize {
@@ -105,6 +106,7 @@ use ReferenceType::*;
 pub struct Generator {
     stack: Vec<StackDirective>,
     bp: usize,
+    externs: HashMap<String, Vec<ReferenceType>>,
     functions: HashMap<String, Vec<Instr>>,
     data: Vec<String>,
 }
@@ -117,6 +119,7 @@ impl Default for Generator {
         Self {
             stack: vec![],
             bp: 0,
+            externs: HashMap::new(),
             functions: initial.clone(),
             data: vec![],
         }
@@ -236,7 +239,7 @@ impl Generator {
             Node::Ref(ident) => {
                 VariableContent::Literal(Pointer(Box::new(self.get_reference_type(ident)?)))
             }
-            _ => panic!(), // TODO: Handle Define and CCall here
+            _ => panic!("Impossible to get var content from a {:?}", node),
         })
     }
 
@@ -247,10 +250,12 @@ impl Generator {
     }
 
     fn handle_node(&mut self, node: Node) {
-        if let Node::Define(name, value) = node {
+        if let Define(name, value) = node {
             self.define("main", name, *value);
-        } else if let Node::CCall(name, parameters) = node {
+        } else if let CCall(name, parameters) = node {
             self.c_call("main", name, parameters);
+        } else if let Extern(name, param_types) = node {
+            self.externs.insert(name, param_types);
         }
     }
 
@@ -336,7 +341,17 @@ impl Generator {
                     StackDirective::Variable(name, VariableContent::Literal(Int)),
                 ) // TODO: Determine return type of each C function
             }
-            _ => panic!("Node can not be used in a define."),
+            _ => {
+                self.handle_node(node.clone());
+                (
+                    self.push_type(&Type::Bool(true), 0),
+                    StackDirective::Variable(
+                        name,
+                        self.node_as_var_content(&Literal(Type::Bool(true)))
+                            .unwrap(),
+                    ),
+                )
+            }
         };
 
         self.stack.push(asm.1);
@@ -347,8 +362,13 @@ impl Generator {
         const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
         let mut cloned_params_size = vec![];
 
+        let parameter_types: Vec<ReferenceType> = match self.externs.get(&c_func) {
+            Some(types) => types.clone()[1..].to_vec(),
+            None => panic!("No function named {c_func}"),
+        };
+
         for x in &parameters {
-            cloned_params_size.push(self.node_byte_size(x)); //TODO: C calls will error here as their result type size is unknown
+            cloned_params_size.push(self.node_byte_size(x)); // TODO: C calls will error here as their result type size is unknown
         }
 
         let parameter_stack_size = if cloned_params_size.len() > 6 {
@@ -371,14 +391,28 @@ impl Generator {
                 .push(Sub(RSP, Value(n.to_string())))
         }
 
+        let check_type = move |position: usize, t: &ReferenceType, fn_name: &String| {
+            if let Some(expected_type) = parameter_types.get(position) {
+                if expected_type != t {
+                    panic!("Incorrect type given to {fn_name}");
+                }
+            } else {
+                panic!("Too many parameters given to {fn_name}.");
+            }
+        };
+
         for (i, x) in parameters.iter().enumerate().rev() {
             if i > 5 {
                 let asm: (Vec<Instr>, StackDirective) = match x {
-                    Node::Literal(t) => (
-                        self.push_type(t, 0),
-                        StackDirective::TempLiteral(self.node_as_var_content(x).unwrap()),
-                    ),
+                    Node::Literal(t) => {
+                        check_type(i, &t.get_ref_type(), &c_func);
+                        (
+                            self.push_type(t, 0),
+                            StackDirective::TempLiteral(self.node_as_var_content(x).unwrap()),
+                        )
+                    }
                     Node::Ident(ident) => {
+                        check_type(i, &self.get_reference_type(ident).unwrap(), &c_func);
                         let reg = self.get_address(ident.to_string()).unwrap();
                         (
                             push_reg(reg.clone(), self.stack_size_from_rbp()),
@@ -386,6 +420,12 @@ impl Generator {
                         )
                     }
                     Node::Ref(ident) => {
+                        check_type(
+                            i,
+                            &Pointer(Box::new(self.get_reference_type(ident).unwrap())),
+                            &c_func,
+                        );
+
                         let var_content = self.node_as_var_content(x).unwrap();
                         (
                             self.push_type(
@@ -398,8 +438,9 @@ impl Generator {
                             StackDirective::TempLiteral(var_content),
                         )
                     }
-                    CCall(c_func, parameters) => {
-                        self.c_call(function, c_func.to_string(), parameters.to_vec());
+                    CCall(c_func_call, parameters) => {
+                        check_type(i, &self.externs.get(c_func_call).unwrap()[0], &c_func);
+                        self.c_call(function, c_func_call.to_string(), parameters.to_vec());
                         (
                             push_reg(RAX, self.stack_size_from_rbp()),
                             StackDirective::TempLiteral(VariableContent::Literal(Int)),
@@ -412,23 +453,40 @@ impl Generator {
                 self.functions.get_mut(function).unwrap().extend(asm.0);
             } else {
                 let set_reg = match x {
-                    Node::Ident(ident) => match self.get_reference_type(&ident).unwrap() {
-                        Array(..) => reference_reg(
-                            REGSITERS64[i].clone(),
-                            self.get_address_reference(ident.to_string()).unwrap(),
-                        ),
-                        _ => vec![mov_reg(
-                            REGSITERS64[i].clone(),
-                            self.get_address_reference(ident.to_string()).unwrap(),
-                        )],
+                    Ident(ident) => match self.get_reference_type(&ident).unwrap() {
+                        Array(_, inner_type) => {
+                            check_type(i, &Pointer(inner_type), &c_func);
+                            reference_reg(
+                                REGSITERS64[i].clone(),
+                                self.get_address_reference(ident.to_string()).unwrap(),
+                            )
+                        }
+                        _ => {
+                            check_type(i, &self.get_reference_type(ident).unwrap(), &c_func);
+                            vec![mov_reg(
+                                REGSITERS64[i].clone(),
+                                self.get_address_reference(ident.to_string()).unwrap(),
+                            )]
+                        }
                     },
-                    Node::Literal(t) => vec![self.mov_type(REGSITERS64[i].clone(), t.clone())],
-                    Node::Ref(ident) => reference_reg(
-                        REGSITERS64[i].clone(),
-                        self.get_address(ident.to_string()).unwrap(),
-                    ),
-                    CCall(c_func, parameters) => {
-                        self.c_call(function, c_func.to_string(), parameters.to_vec());
+                    Literal(t) => {
+                        check_type(i, &t.get_ref_type(), &c_func);
+                        vec![self.mov_type(REGSITERS64[i].clone(), t.clone())]
+                    }
+                    Node::Ref(ident) => {
+                        check_type(
+                            i,
+                            &Pointer(Box::new(self.get_reference_type(ident).unwrap())),
+                            &c_func,
+                        );
+                        reference_reg(
+                            REGSITERS64[i].clone(),
+                            self.get_address(ident.to_string()).unwrap(),
+                        )
+                    }
+                    CCall(c_func_call, parameters) => {
+                        check_type(i, &self.externs.get(c_func_call).unwrap()[0], &c_func);
+                        self.c_call(function, c_func_call.to_string(), parameters.to_vec());
                         vec![mov_reg(REGSITERS64[i].clone(), RAX)] // TODO: Determine return type of each C function
                     }
                     _ => panic!("Node can not be used as a parameter."),
@@ -461,6 +519,11 @@ impl Generator {
         self.write_exit();
 
         let mut buffer: Vec<u8> = include_bytes!("header.asm").to_vec();
+
+        for (name, _) in &self.externs {
+            buffer.extend(format!("extern {name}\n").as_bytes());
+        }
+
         for (key, value) in &self.functions {
             buffer.extend(format!("\n{}:\n", key).as_bytes());
             for instr in value {
