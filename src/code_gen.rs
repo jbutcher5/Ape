@@ -29,6 +29,7 @@ pub enum Node {
     Define(String, Box<Node>),
     CCall(String, Vec<Node>),
     Extern(String, Vec<ReferenceType>),
+    If(Box<Node>, Vec<Node>),
 }
 
 pub trait ByteSize {
@@ -109,6 +110,7 @@ pub struct Generator {
     externs: HashMap<String, Vec<ReferenceType>>,
     functions: HashMap<String, Vec<Instr>>,
     data: Vec<String>,
+    next_branch: u64,
 }
 
 impl Default for Generator {
@@ -122,6 +124,7 @@ impl Default for Generator {
             externs: HashMap::new(),
             functions: initial.clone(),
             data: vec![],
+            next_branch: 0,
         }
     }
 }
@@ -256,6 +259,8 @@ impl Generator {
             self.c_call("main", name, parameters);
         } else if let Extern(name, param_types) = node {
             self.externs.insert(name, param_types);
+        } else if let If(precondition, nodes) = node {
+            self.if_statement("main", *precondition, nodes);
         }
     }
 
@@ -301,9 +306,42 @@ impl Generator {
         }
     }
 
-    #[inline]
+    fn if_statement(&mut self, function: &str, precondition: Node, nodes: Vec<Node>) {
+        let (asm, label): (Vec<Instr>, Label) = match precondition {
+            Literal(Type::Bool(value)) => (
+                vec![
+                    Cmp(Value((value as i64).to_string()), Value(0.to_string())),
+                    Je(Label::Numbered(self.next_branch)),
+                ],
+                Label::Numbered(self.next_branch),
+            ),
+            Ident(ident) => match self.get_reference_type(&ident) {
+                Some(Bool | Int) => {
+                    let address = self.get_address(ident.clone()).unwrap();
+                    let label = Label::Numbered(self.next_branch);
+
+                    (
+                        vec![Cmp(Reg(address), Value(0.to_string())), Je(label.clone())],
+                        label,
+                    )
+                }
+                Some(_) => panic!("Invalid type to be used in an if statement"),
+                None => panic!("Unknown identifier {ident}"),
+            },
+            _ => panic!("Invalid node to be used as a precondition."),
+        };
+        self.next_branch += 1;
+
+        self.functions.get_mut(function).unwrap().extend(asm);
+        self.apply(nodes);
+        self.functions
+            .get_mut(function)
+            .unwrap()
+            .push(DefineLabel(label));
+    }
+
     fn define(&mut self, function: &str, name: String, node: Node) {
-        let asm: (Vec<Instr>, StackDirective) = match node {
+        let (asm, directive): (Vec<Instr>, StackDirective) = match node {
             Literal(ref t) => (
                 self.push_type(&t, 0),
                 StackDirective::Variable(name, self.node_as_var_content(&node).unwrap()),
@@ -354,8 +392,8 @@ impl Generator {
             }
         };
 
-        self.stack.push(asm.1);
-        self.functions.get_mut(function).unwrap().extend(asm.0);
+        self.stack.push(directive);
+        self.functions.get_mut(function).unwrap().extend(asm);
     }
 
     fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Node>) {

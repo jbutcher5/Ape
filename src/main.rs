@@ -20,18 +20,14 @@ fn main() -> io::Result<()> {
             "addOne".to_string(),
             vec![ReferenceType::Int, ReferenceType::Int],
         ),
-        Define(
-            "y".to_string(),
-            Box::new(Literal(Array(vec![Int(123), Int(345)]))),
-        ),
-        Define("z".to_string(), Box::new(Ident("y".to_string()))),
-        Define(
-            "w".to_string(),
-            Box::new(CCall("addOne".to_string(), vec![Literal(Int(5))])),
-        ),
-        CCall(
-            "printf".to_string(),
-            vec![Literal(Str(r"%d\n".to_string())), Ident("w".to_string())],
+        Define("test".to_string(), Box::new(Literal(Bool(true)))),
+        Define("w".to_string(), Box::new(Literal(Int(1)))),
+        If(
+            Box::new(Ident("test".to_string())),
+            vec![CCall(
+                "printf".to_string(),
+                vec![Literal(Str(r"%d\n".to_string())), Ident("w".to_string())],
+            )],
         ),
     ]);
 

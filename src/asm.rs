@@ -120,12 +120,14 @@ impl ToString for Register {
             RW(n) => format!("r{n}w"),
             RB(n) => format!("r{n}b"),
             Stack(i, size) => {
-                if i == &0 {
+                let position: i64 = i.clone() - *size as i64;
+
+                if position == 0 {
                     format!("{} [rbp]", name_size(size))
-                } else if i > &0 {
-                    format!("{} [rbp+{}]", name_size(size), i)
+                } else if position > 0 {
+                    format!("{} [rbp+{}]", name_size(size), position)
                 } else {
-                    format!("{} [rbp{}]", name_size(size), i)
+                    format!("{} [rbp{}]", name_size(size), position)
                 }
             }
             Data(index) => format!("s{index}"),
@@ -204,7 +206,7 @@ impl ToString for Instr {
             DefineLabel(label) => format!("{}:", label.to_string()),
             Jmp(label) => format!("jmp {}", label.to_string()),
             Je(label) => format!("je {}", label.to_string()),
-            Cmp(op1, op2) => format!("cmp {} {}", op1.to_string(), op2.to_string()),
+            Cmp(op1, op2) => format!("cmp {}, {}", op1.to_string(), op2.to_string()),
         }
     }
 }
