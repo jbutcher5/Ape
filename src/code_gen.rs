@@ -174,17 +174,18 @@ impl Generator {
                 let index = self.get_str_index_mut(&val);
                 Mov(r, Reg(Data(index)))
             }
+            Type::Pointer(addr, _) => Lea(r, addr),
             _ => panic!("The type {:?} can not be copied.", t),
         }
     }
 
-    pub fn get_address(&self, name: String) -> Option<Register> {
+    pub fn get_address(&self, name: &String) -> Option<Register> {
         let mut acc: i64 = 0;
         let mut size: Option<u64> = None;
 
         for x in &self.stack[self.bp..] {
             if let StackDirective::Variable(var, var_type) = x {
-                if var.clone() == name {
+                if var == name {
                     size = Some(var_type.byte_size());
                     break;
                 } else {
@@ -198,15 +199,16 @@ impl Generator {
         Some(Stack(acc, size?))
     }
 
-    pub fn get_address_reference(&self, name: String) -> Option<Register> {
+    pub fn get_address_reference(&self, name: &String) -> Option<Register> {
         let mut acc: i64 = 0;
         let mut size: Option<u64> = None;
 
         for x in &self.stack[self.bp..] {
             if let StackDirective::Variable(var, var_type) = x {
-                if var.clone() == name {
+                if var == name {
                     size = Some(match var_type {
-                        VariableContent::Literal(Array(_, _)) => 8,
+                        VariableContent::Literal(Array(_, t))
+                        | VariableContent::Ident(_, Array(_, t)) => t.byte_size(),
                         _ => var_type.byte_size(),
                     });
                     break;
@@ -264,6 +266,29 @@ impl Generator {
         }
     }
 
+    fn eval_node(&self, node: &Node) -> Node {
+        match node {
+            Ref(ident) => Literal(Type::Pointer(
+                self.get_address_reference(ident).unwrap(),
+                self.get_reference_type(ident).unwrap(),
+            )),
+            _ => node.clone(),
+        }
+    }
+
+    fn node_type(&self, node: &Node) -> Option<ReferenceType> {
+        Some(match node {
+            Literal(t) => t.get_ref_type(),
+            Ident(ident) => self.get_reference_type(ident)?,
+            Ref(t) => Pointer(Box::new(match self.get_reference_type(t)? {
+                Array(_, t) => *t,
+                t => t,
+            })),
+            CCall(ident, _) => self.externs.get(ident)?.get(0)?.clone(),
+            _ => return None,
+        })
+    }
+
     fn stack_size_from_rbp(&self) -> u64 {
         let mut acc = 0;
 
@@ -317,7 +342,7 @@ impl Generator {
             ),
             Ident(ident) => match self.get_reference_type(&ident) {
                 Some(Bool | Int) => {
-                    let address = self.get_address(ident.clone()).unwrap();
+                    let address = self.get_address(&ident).unwrap();
                     let label = Label::Numbered(self.next_branch);
 
                     (
@@ -340,38 +365,47 @@ impl Generator {
             .push(DefineLabel(label));
     }
 
-    fn define(&mut self, function: &str, name: String, node: Node) {
+    fn define(&mut self, function: &str, name: String, mut node: Node) {
+        node = self.eval_node(&node);
+
         let (asm, directive): (Vec<Instr>, StackDirective) = match node {
             Literal(ref t) => (
                 self.push_type(&t, 0),
                 StackDirective::Variable(name, self.node_as_var_content(&node).unwrap()),
             ),
-            Ident(ref ident) => {
-                let reg = self.get_address_reference(ident.to_string()).unwrap();
-                (
-                    push_reg(reg, self.stack_size_from_rbp()),
-                    StackDirective::Variable(
-                        name,
-                        match self.get_reference_type(&ident).unwrap() {
-                            Array(_, t) => VariableContent::Literal(Pointer(t)),
-                            t => VariableContent::Ident(ident.to_string(), t),
-                        },
+            Ident(ref ident) => (
+                match self.get_reference_type(&ident).unwrap() {
+                    Array(len, t) => {
+                        let bytesize = t.byte_size();
+                        let position = if let Some(Stack(x, _)) = self.get_address(&ident) {
+                            x
+                        } else {
+                            panic!()
+                        };
+                        let mut asm_buffer: Vec<Instr> = vec![];
+
+                        for i in 0..len {
+                            asm_buffer.extend(push_reg(
+                                Stack(position - bytesize as i64 * i as i64, bytesize),
+                                self.stack_size_from_rbp() + bytesize * i as u64,
+                            ));
+                        }
+
+                        asm_buffer
+                    }
+                    _ => {
+                        let reg = self.get_address(ident).unwrap();
+                        push_reg(reg, self.stack_size_from_rbp())
+                    }
+                },
+                StackDirective::Variable(
+                    name,
+                    VariableContent::Ident(
+                        ident.to_string(),
+                        self.get_reference_type(ident).unwrap(),
                     ),
-                )
-            }
-            Ref(ref ident) => {
-                let var_content = self.node_as_var_content(&node).unwrap();
-                (
-                    self.push_type(
-                        &Type::Pointer(
-                            self.get_address(ident.to_string()).unwrap(),
-                            var_content.type_ref().clone(),
-                        ),
-                        0,
-                    ),
-                    StackDirective::Variable(name, var_content),
-                )
-            }
+                ),
+            ),
             CCall(c_func, parameters) => {
                 self.c_call(function, c_func, parameters);
                 (
@@ -429,55 +463,30 @@ impl Generator {
                 .push(Sub(RSP, Value(n.to_string())))
         }
 
-        let check_type = move |position: usize, t: &ReferenceType, fn_name: &String| {
-            if let Some(expected_type) = parameter_types.get(position) {
-                if expected_type != t {
-                    panic!("Incorrect type given to {fn_name}");
+        for (i, x) in parameters.iter().enumerate().rev() {
+            if let Some(expected_type) = parameter_types.get(i) {
+                if expected_type != &self.node_type(x).unwrap() {
+                    panic!("Incorrect type given to {c_func}");
                 }
             } else {
-                panic!("Too many parameters given to {fn_name}.");
+                panic!("Too many parameters given to {c_func}.");
             }
-        };
 
-        for (i, x) in parameters.iter().enumerate().rev() {
+            let node = self.eval_node(x);
             if i > 5 {
-                let asm: (Vec<Instr>, StackDirective) = match x {
-                    Node::Literal(t) => {
-                        check_type(i, &t.get_ref_type(), &c_func);
-                        (
-                            self.push_type(t, 0),
-                            StackDirective::TempLiteral(self.node_as_var_content(x).unwrap()),
-                        )
-                    }
-                    Node::Ident(ident) => {
-                        check_type(i, &self.get_reference_type(ident).unwrap(), &c_func);
-                        let reg = self.get_address(ident.to_string()).unwrap();
+                let asm: (Vec<Instr>, StackDirective) = match node {
+                    Literal(ref t) => (
+                        self.push_type(&t, 0),
+                        StackDirective::TempLiteral(self.node_as_var_content(&node).unwrap()),
+                    ),
+                    Ident(ident) => {
+                        let reg = self.get_address(&ident).unwrap();
                         (
                             push_reg(reg.clone(), self.stack_size_from_rbp()),
                             StackDirective::TempReg(reg),
                         )
                     }
-                    Node::Ref(ident) => {
-                        check_type(
-                            i,
-                            &Pointer(Box::new(self.get_reference_type(ident).unwrap())),
-                            &c_func,
-                        );
-
-                        let var_content = self.node_as_var_content(x).unwrap();
-                        (
-                            self.push_type(
-                                &Type::Pointer(
-                                    self.get_address(ident.to_string()).unwrap(),
-                                    var_content.type_ref().clone(),
-                                ),
-                                0,
-                            ),
-                            StackDirective::TempLiteral(var_content),
-                        )
-                    }
                     CCall(c_func_call, parameters) => {
-                        check_type(i, &self.externs.get(c_func_call).unwrap()[0], &c_func);
                         self.c_call(function, c_func_call.to_string(), parameters.to_vec());
                         (
                             push_reg(RAX, self.stack_size_from_rbp()),
@@ -490,40 +499,23 @@ impl Generator {
                 self.stack.push(asm.1);
                 self.functions.get_mut(function).unwrap().extend(asm.0);
             } else {
-                let set_reg = match x {
+                let set_reg = match node {
                     Ident(ident) => match self.get_reference_type(&ident).unwrap() {
-                        Array(_, inner_type) => {
-                            check_type(i, &Pointer(inner_type), &c_func);
-                            reference_reg(
-                                REGSITERS64[i].clone(),
-                                self.get_address_reference(ident.to_string()).unwrap(),
-                            )
-                        }
+                        Array(_, _) => reference_reg(
+                            REGSITERS64[i].clone(),
+                            self.get_address_reference(&ident).unwrap(),
+                        ),
                         _ => {
-                            check_type(i, &self.get_reference_type(ident).unwrap(), &c_func);
                             vec![mov_reg(
                                 REGSITERS64[i].clone(),
-                                self.get_address_reference(ident.to_string()).unwrap(),
+                                self.get_address_reference(&ident).unwrap(),
                             )]
                         }
                     },
                     Literal(t) => {
-                        check_type(i, &t.get_ref_type(), &c_func);
                         vec![self.mov_type(REGSITERS64[i].clone(), t.clone())]
                     }
-                    Node::Ref(ident) => {
-                        check_type(
-                            i,
-                            &Pointer(Box::new(self.get_reference_type(ident).unwrap())),
-                            &c_func,
-                        );
-                        reference_reg(
-                            REGSITERS64[i].clone(),
-                            self.get_address(ident.to_string()).unwrap(),
-                        )
-                    }
                     CCall(c_func_call, parameters) => {
-                        check_type(i, &self.externs.get(c_func_call).unwrap()[0], &c_func);
                         self.c_call(function, c_func_call.to_string(), parameters.to_vec());
                         vec![mov_reg(REGSITERS64[i].clone(), RAX)] // TODO: Determine return type of each C function
                     }

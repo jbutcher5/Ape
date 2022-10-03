@@ -3,6 +3,7 @@ pub mod code_gen;
 pub mod parser;
 
 use code_gen::Generator;
+use code_gen::Node;
 use code_gen::Node::*;
 use code_gen::ReferenceType;
 use code_gen::Type::*;
@@ -14,20 +15,28 @@ fn main() -> io::Result<()> {
     generator.apply(vec![
         Extern(
             "printf".to_string(),
-            vec![ReferenceType::Int, ReferenceType::Str, ReferenceType::Int],
+            vec![
+                ReferenceType::Int,
+                ReferenceType::Str,
+                ReferenceType::Pointer(Box::new(ReferenceType::Int)),
+            ],
         ),
         Extern(
             "addOne".to_string(),
             vec![ReferenceType::Int, ReferenceType::Int],
         ),
-        Define("test".to_string(), Box::new(Literal(Bool(true)))),
-        Define("w".to_string(), Box::new(Literal(Int(1)))),
-        If(
-            Box::new(Ident("test".to_string())),
-            vec![CCall(
-                "printf".to_string(),
-                vec![Literal(Str(r"%d\n".to_string())), Ident("w".to_string())],
-            )],
+        Define(
+            "x".to_string(),
+            Box::new(Literal(Array(vec![Int(5), Int(8)]))),
+        ),
+        Define("y".to_string(), Box::new(Ident("x".to_string()))),
+        CCall(
+            "printf".to_string(),
+            vec![Literal(Str(r"%d\n".to_string())), Ref("x".to_string())],
+        ),
+        CCall(
+            "printf".to_string(),
+            vec![Literal(Str(r"%d\n".to_string())), Ref("y".to_string())],
         ),
     ]);
 
