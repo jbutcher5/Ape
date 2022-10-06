@@ -141,7 +141,7 @@ impl Generator {
                 Sub(RSP, Value(1.to_string())),
                 Mov(
                     Stack(-(stack_size as i64), 1),
-                    Value((val.clone() as i64).to_string()),
+                    Value((*val as i64).to_string()),
                 ),
             ],
             Type::Str(val) => {
@@ -237,7 +237,7 @@ impl Generator {
 
     fn node_as_var_content(&self, node: &IRNode) -> Option<VariableContent> {
         Some(match node {
-            Literal(t) => VariableContent::Literal(t.get_ref_type().clone()),
+            Literal(t) => VariableContent::Literal(t.get_ref_type()),
             Ident(ident) => {
                 VariableContent::Ident(ident.to_string(), self.get_reference_type(ident)?)
             }
@@ -370,14 +370,14 @@ impl Generator {
 
         let (asm, directive): (Vec<Instr>, StackDirective) = match node {
             Literal(ref t) => (
-                self.push_type(&t, 0),
+                self.push_type(t, 0),
                 StackDirective::Variable(name, self.node_as_var_content(&node).unwrap()),
             ),
             Ident(ref ident) => (
-                match self.get_reference_type(&ident).unwrap() {
+                match self.get_reference_type(ident).unwrap() {
                     Array(len, t) => {
                         let bytesize = t.byte_size();
-                        let position = if let Some(Stack(x, _)) = self.get_address(&ident) {
+                        let position = if let Some(Stack(x, _)) = self.get_address(ident) {
                             x
                         } else {
                             panic!()
@@ -476,7 +476,7 @@ impl Generator {
             if i > 5 {
                 let asm: (Vec<Instr>, StackDirective) = match node {
                     Literal(ref t) => (
-                        self.push_type(&t, 0),
+                        self.push_type(t, 0),
                         StackDirective::TempLiteral(self.node_as_var_content(&node).unwrap()),
                     ),
                     Ident(ident) => {
@@ -550,7 +550,7 @@ impl Generator {
 
         let mut buffer: Vec<u8> = include_bytes!("header.asm").to_vec();
 
-        for (name, _) in &self.externs {
+        for name in self.externs.keys() {
             buffer.extend(format!("extern {name}\n").as_bytes());
         }
 

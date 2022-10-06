@@ -104,7 +104,7 @@ pub enum Label {
 impl ToString for Label {
     fn to_string(&self) -> String {
         match self {
-            Self::Named(string) => format!("{string}"),
+            Self::Named(string) => string.to_string(),
             Self::Numbered(n) => format!(".L{n}"),
         }
     }
@@ -120,7 +120,7 @@ impl ToString for Register {
             RW(n) => format!("r{n}w"),
             RB(n) => format!("r{n}b"),
             Stack(i, size) => {
-                let position: i64 = i.clone() - *size as i64;
+                let position: i64 = *i - *size as i64;
 
                 if position == 0 {
                     format!("{} [rbp]", name_size(size))
