@@ -22,14 +22,14 @@ pub enum ReferenceType {
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
-pub enum Node {
+pub enum IRNode {
     Literal(Type),
     Ident(String),
     Ref(String),
-    Define(String, Box<Node>),
-    CCall(String, Vec<Node>),
+    Define(String, Box<IRNode>),
+    CCall(String, Vec<IRNode>),
     Extern(String, Vec<ReferenceType>),
-    If(Box<Node>, Vec<Node>),
+    If(Box<IRNode>, Vec<IRNode>),
 }
 
 pub trait ByteSize {
@@ -100,7 +100,7 @@ pub enum StackDirective {
     BasePointer,
 }
 
-use Node::*;
+use IRNode::*;
 use ReferenceType::*;
 
 #[derive(Clone)]
@@ -235,26 +235,26 @@ impl Generator {
         None
     }
 
-    fn node_as_var_content(&self, node: &Node) -> Option<VariableContent> {
+    fn node_as_var_content(&self, node: &IRNode) -> Option<VariableContent> {
         Some(match node {
-            Node::Literal(t) => VariableContent::Literal(t.get_ref_type().clone()),
-            Node::Ident(ident) => {
+            Literal(t) => VariableContent::Literal(t.get_ref_type().clone()),
+            Ident(ident) => {
                 VariableContent::Ident(ident.to_string(), self.get_reference_type(ident)?)
             }
-            Node::Ref(ident) => {
+            Ref(ident) => {
                 VariableContent::Literal(Pointer(Box::new(self.get_reference_type(ident)?)))
             }
             _ => panic!("Impossible to get var content from a {:?}", node),
         })
     }
 
-    pub fn apply(&mut self, nodes: Vec<Node>) {
+    pub fn apply(&mut self, nodes: Vec<IRNode>) {
         for node in nodes {
             self.handle_node(node);
         }
     }
 
-    fn handle_node(&mut self, node: Node) {
+    fn handle_node(&mut self, node: IRNode) {
         if let Define(name, value) = node {
             self.define("main", name, *value);
         } else if let CCall(name, parameters) = node {
@@ -266,7 +266,7 @@ impl Generator {
         }
     }
 
-    fn eval_node(&self, node: &Node) -> Node {
+    fn eval_node(&self, node: &IRNode) -> IRNode {
         match node {
             Ref(ident) => Literal(Type::Pointer(
                 self.get_address_reference(ident).unwrap(),
@@ -276,7 +276,7 @@ impl Generator {
         }
     }
 
-    fn node_type(&self, node: &Node) -> Option<ReferenceType> {
+    fn node_type(&self, node: &IRNode) -> Option<ReferenceType> {
         Some(match node {
             Literal(t) => t.get_ref_type(),
             Ident(ident) => self.get_reference_type(ident)?,
@@ -316,7 +316,7 @@ impl Generator {
     }
 
     #[inline]
-    fn node_byte_size(&self, node: &Node) -> u64 {
+    fn node_byte_size(&self, node: &IRNode) -> u64 {
         self.node_as_var_content(node).unwrap().byte_size()
     }
 
@@ -331,7 +331,7 @@ impl Generator {
         }
     }
 
-    fn if_statement(&mut self, function: &str, precondition: Node, nodes: Vec<Node>) {
+    fn if_statement(&mut self, function: &str, precondition: IRNode, nodes: Vec<IRNode>) {
         let (asm, label): (Vec<Instr>, Label) = match precondition {
             Literal(Type::Bool(value)) => (
                 vec![
@@ -365,7 +365,7 @@ impl Generator {
             .push(DefineLabel(label));
     }
 
-    fn define(&mut self, function: &str, name: String, mut node: Node) {
+    fn define(&mut self, function: &str, name: String, mut node: IRNode) {
         node = self.eval_node(&node);
 
         let (asm, directive): (Vec<Instr>, StackDirective) = match node {
@@ -430,7 +430,7 @@ impl Generator {
         self.functions.get_mut(function).unwrap().extend(asm);
     }
 
-    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<Node>) {
+    fn c_call(&mut self, function: &str, c_func: String, parameters: Vec<IRNode>) {
         const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
         let mut cloned_params_size = vec![];
 

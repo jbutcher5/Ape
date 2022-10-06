@@ -1,8 +1,33 @@
+use crate::code_gen::{IRNode, Type};
+
 #[derive(Debug, Clone)]
-pub enum Node {
+pub enum ParserNode {
     Int(i64),
-    Call(Vec<Node>),
+    Call(Vec<ParserNode>),
     Ident(String),
+}
+
+impl TryFrom<ParserNode> for IRNode {
+    type Error = &'static str;
+
+    fn try_from(node: ParserNode) -> Result<Self, Self::Error> {
+        Ok(match node {
+            ParserNode::Call(array) => match array.as_slice() {
+                [ParserNode::Ident(ident), tail @ ..] => IRNode::CCall(ident.to_string(), {
+                    let mut acc = vec![];
+
+                    for node in tail {
+                        acc.push(IRNode::try_from(node.clone())?);
+                    }
+
+                    acc
+                }),
+                _ => return Err("Call's must begin with an ident"),
+            },
+            ParserNode::Int(value) => IRNode::Literal(Type::Int(value)),
+            ParserNode::Ident(ident) => IRNode::Ident(ident),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -19,23 +44,19 @@ impl Parser {
         })
     }
 
-    fn parse_node(&mut self) -> Option<Node> {
-        let mut result: Option<Node> = None;
-
+    fn parse_node(&mut self) -> Result<ParserNode, &'static str> {
         self.skip_whitespace();
 
         match self.get_index() {
-            Some(b'0'..=b'9') => result = self.parse_int(),
-            Some(b'(') => result = self.parse_call(),
-            Some(_) => result = self.parse_ident(),
-            None => println!("Unexpected EOF"),
+            Some(b'0'..=b'9') => Ok(self.parse_int()),
+            Some(b'(') => self.parse_call(),
+            Some(_) => Ok(self.parse_ident()),
+            None => Err("Unexpected EOF"),
         }
-
-        result
     }
 
-    pub fn parse(&mut self) -> Option<Vec<Node>> {
-        let mut result: Vec<Node> = vec![];
+    pub fn parse(&mut self) -> Result<Vec<ParserNode>, &'static str> {
+        let mut result: Vec<ParserNode> = vec![];
 
         while self.index < self.data.len() {
             let node = self.parse_node()?;
@@ -44,7 +65,15 @@ impl Parser {
             result.push(node);
         }
 
-        Some(result)
+        Ok(result)
+    }
+
+    pub fn parse_to_ir(&mut self) -> Result<Vec<IRNode>, &'static str> {
+        Ok(self
+            .parse()?
+            .iter()
+            .map(|node| IRNode::try_from(node.clone()))
+            .collect::<Result<Vec<_>, _>>()?)
     }
 
     fn skip_whitespace(&mut self) {
@@ -61,7 +90,7 @@ impl Parser {
         self.index += 1;
     }
 
-    fn parse_int(&mut self) -> Option<Node> {
+    fn parse_int(&mut self) -> ParserNode {
         let mut acc: i64 = 0;
 
         while let Some(c) = self.get_index() {
@@ -74,10 +103,10 @@ impl Parser {
             }
         }
 
-        Some(Node::Int(acc))
+        ParserNode::Int(acc)
     }
 
-    fn parse_ident(&mut self) -> Option<Node> {
+    fn parse_ident(&mut self) -> ParserNode {
         let start = self.index;
 
         while let Some(c) = self.get_index() {
@@ -88,13 +117,12 @@ impl Parser {
             }
         }
 
-        Some(Node::Ident(
-            String::from_utf8(self.data[start..self.index].to_vec()).unwrap(),
-        ))
+        ParserNode::Ident(String::from_utf8(self.data[start..self.index].to_vec()).unwrap())
+        // TODO: Remove unwrap
     }
 
-    fn parse_call(&mut self) -> Option<Node> {
-        let mut acc: Vec<Node> = vec![];
+    fn parse_call(&mut self) -> Result<ParserNode, &'static str> {
+        let mut acc: Vec<ParserNode> = vec![];
         self.inc();
         self.skip_whitespace();
 
@@ -108,6 +136,6 @@ impl Parser {
             self.skip_whitespace();
         }
 
-        Some(Node::Call(acc))
+        Ok(ParserNode::Call(acc))
     }
 }
