@@ -69,11 +69,7 @@ impl Parser {
     }
 
     pub fn parse_to_ir(&mut self) -> Result<Vec<IRNode>, &'static str> {
-        Ok(self
-            .parse()?
-            .iter()
-            .map(|node| IRNode::try_from(node.clone()))
-            .collect::<Result<Vec<_>, _>>()?)
+        self.parse()?.into_iter().map(IRNode::try_from).collect()
     }
 
     fn skip_whitespace(&mut self) {
