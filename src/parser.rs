@@ -7,25 +7,34 @@ pub enum ParserNode {
     Ident(String),
 }
 
-impl TryFrom<ParserNode> for IRNode {
+impl TryFrom<&ParserNode> for IRNode {
     type Error = &'static str;
 
-    fn try_from(node: ParserNode) -> Result<Self, Self::Error> {
+    fn try_from(node: &ParserNode) -> Result<Self, Self::Error> {
+        let _define = ParserNode::Ident("define".to_string());
+
+        fn convert_vec(nodes: &[ParserNode]) -> Result<Vec<IRNode>, &'static str> {
+            let mut acc = vec![];
+
+            for node in nodes {
+                acc.push(IRNode::try_from(node)?);
+            }
+
+            Ok(acc)
+        }
+
         Ok(match node {
             ParserNode::Call(array) => match array.as_slice() {
-                [ParserNode::Ident(ident), tail @ ..] => IRNode::CCall(ident.to_string(), {
-                    let mut acc = vec![];
-
-                    for node in tail {
-                        acc.push(IRNode::try_from(node.clone())?);
-                    }
-
-                    acc
-                }),
+                [_define, ParserNode::Ident(ident), value] => {
+                    IRNode::Define(ident.to_string(), Box::new(IRNode::try_from(value)?))
+                }
+                [ParserNode::Ident(ident), tail @ ..] => {
+                    IRNode::CCall(ident.to_string(), convert_vec(tail)?)
+                }
                 _ => return Err("Call's must begin with an ident"),
             },
-            ParserNode::Int(value) => IRNode::Literal(Type::Int(value)),
-            ParserNode::Ident(ident) => IRNode::Ident(ident),
+            ParserNode::Int(value) => IRNode::Literal(Type::Int(*value)),
+            ParserNode::Ident(ident) => IRNode::Ident(ident.to_string()),
         })
     }
 }
@@ -69,7 +78,7 @@ impl Parser {
     }
 
     pub fn parse_to_ir(&mut self) -> Result<Vec<IRNode>, &'static str> {
-        self.parse()?.into_iter().map(IRNode::try_from).collect()
+        self.parse()?.iter().map(IRNode::try_from).collect()
     }
 
     fn skip_whitespace(&mut self) {
