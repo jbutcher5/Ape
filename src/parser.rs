@@ -1,4 +1,4 @@
-use crate::code_gen::{IRNode, Type};
+use crate::code_gen::{IRNode, ReferenceType, Type};
 
 #[derive(Debug, Clone)]
 pub enum ParserNode {
@@ -12,6 +12,7 @@ impl TryFrom<&ParserNode> for IRNode {
 
     fn try_from(node: &ParserNode) -> Result<Self, Self::Error> {
         let _define = ParserNode::Ident("define".to_string());
+        let _extern = ParserNode::Ident("extern".to_string());
 
         fn convert_vec(nodes: &[ParserNode]) -> Result<Vec<IRNode>, &'static str> {
             let mut acc = vec![];
@@ -27,6 +28,21 @@ impl TryFrom<&ParserNode> for IRNode {
             ParserNode::Call(array) => match array.as_slice() {
                 [_define, ParserNode::Ident(ident), value] => {
                     IRNode::Define(ident.to_string(), Box::new(IRNode::try_from(value)?))
+                }
+                [_extern, ParserNode::Ident(ident), tail @ ..] => {
+                    let mut types = vec![];
+
+                    for t in tail {
+                        match t {
+                            ParserNode::Ident(t) => match ReferenceType::new(t) {
+                                Some(t) => types.push(t),
+                                _ => return Err("Type in an extern must reference a valid type"),
+                            },
+                            _ => return Err("Type cannot be a literal value."),
+                        }
+                    }
+
+                    IRNode::Extern(ident.to_string(), types)
                 }
                 [ParserNode::Ident(ident), tail @ ..] => {
                     IRNode::CCall(ident.to_string(), convert_vec(tail)?)
