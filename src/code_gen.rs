@@ -48,6 +48,32 @@ impl Type {
     }
 }
 
+impl ReferenceType {
+    pub fn new(ident: &str) -> Option<Self> {
+        Some(match ident {
+            "Int" => Self::Int,
+            "Bool" => Self::Bool,
+            "Str" => Self::Str,
+            _ => {
+                if ident.get(0..1)? == "[" && ident.get(ident.len() - 1..ident.len())? == "]" {
+                    let split = ident.find(';')?;
+
+                    let len: usize = ident.get(split..(ident.len()) - 1)?.parse().unwrap();
+                    let t: ReferenceType = Self::new(ident.get(1..split)?)?;
+
+                    Self::Array(len, Box::new(t))
+                } else if ident.get(0..1)? == "&" {
+                    let t: ReferenceType = Self::new(ident.get(1..)?)?;
+
+                    Self::Pointer(Box::new(t))
+                } else {
+                    return None;
+                }
+            }
+        })
+    }
+}
+
 impl ByteSize for ReferenceType {
     #[inline]
     fn byte_size(&self) -> u64 {
