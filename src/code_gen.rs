@@ -433,11 +433,14 @@ impl Generator {
                 ),
             ),
             CCall(c_func, parameters) => {
-                self.c_call(function, c_func, parameters);
+                self.c_call(function, c_func.to_string(), parameters);
                 (
                     push_reg(RAX, self.stack_size_from_rbp()),
-                    StackDirective::Variable(name, VariableContent::Literal(Int)),
-                ) // TODO: Determine return type of each C function
+                    StackDirective::Variable(
+                        name,
+                        VariableContent::Literal(self.externs.get(&c_func).unwrap()[0].clone()),
+                    ),
+                )
             }
             _ => {
                 self.handle_node(node.clone());
