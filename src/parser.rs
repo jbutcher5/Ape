@@ -1,4 +1,4 @@
-use crate::code_gen::{IRNode, ReferenceType, Type};
+use crate::code_gen::{Literal, Node, Type};
 
 #[derive(Debug, Clone)]
 pub enum ParserNode {
@@ -7,18 +7,18 @@ pub enum ParserNode {
     Ident(String),
 }
 
-impl TryFrom<&ParserNode> for IRNode {
+impl TryFrom<&ParserNode> for Node {
     type Error = &'static str;
 
     fn try_from(node: &ParserNode) -> Result<Self, Self::Error> {
         let _define = ParserNode::Ident("define".to_string());
         let _extern = ParserNode::Ident("extern".to_string());
 
-        fn convert_vec(nodes: &[ParserNode]) -> Result<Vec<IRNode>, &'static str> {
+        fn convert_vec(nodes: &[ParserNode]) -> Result<Vec<Node>, &'static str> {
             let mut acc = vec![];
 
             for node in nodes {
-                acc.push(IRNode::try_from(node)?);
+                acc.push(Node::try_from(node)?);
             }
 
             Ok(acc)
@@ -27,30 +27,30 @@ impl TryFrom<&ParserNode> for IRNode {
         Ok(match node {
             ParserNode::Call(array) => match array.as_slice() {
                 [_define, ParserNode::Ident(ident), value] => {
-                    IRNode::Define(ident.to_string(), Box::new(IRNode::try_from(value)?))
+                    Node::Define(ident.to_string(), Box::new(Node::try_from(value)?))
                 }
                 [_extern, ParserNode::Ident(ident), tail @ ..] => {
                     let mut types = vec![];
 
                     for t in tail {
                         match t {
-                            ParserNode::Ident(t) => match ReferenceType::new(t) {
-                                Some(t) => types.push(t),
+                            ParserNode::Ident(t) => match Type::try_from(t.as_str()) {
+                                Ok(t) => types.push(t),
                                 _ => return Err("Type in an extern must reference a valid type"),
                             },
                             _ => return Err("Type cannot be a literal value."),
                         }
                     }
 
-                    IRNode::Extern(ident.to_string(), types)
+                    Node::Extern(ident.to_string(), types)
                 }
                 [ParserNode::Ident(ident), tail @ ..] => {
-                    IRNode::CCall(ident.to_string(), convert_vec(tail)?)
+                    Node::Call(ident.to_string(), convert_vec(tail)?)
                 }
                 _ => return Err("Call's must begin with an ident"),
             },
-            ParserNode::Int(value) => IRNode::Literal(Type::Int(*value)),
-            ParserNode::Ident(ident) => IRNode::Ident(ident.to_string()),
+            ParserNode::Int(value) => Node::Literal(Literal::Int(*value)),
+            ParserNode::Ident(ident) => Node::Ident(ident.to_string()),
         })
     }
 }
@@ -93,8 +93,8 @@ impl Parser {
         Ok(result)
     }
 
-    pub fn parse_to_ir(&mut self) -> Result<Vec<IRNode>, &'static str> {
-        self.parse()?.iter().map(IRNode::try_from).collect()
+    pub fn parse_to_ir(&mut self) -> Result<Vec<Node>, &'static str> {
+        self.parse()?.iter().map(Node::try_from).collect()
     }
 
     fn skip_whitespace(&mut self) {
