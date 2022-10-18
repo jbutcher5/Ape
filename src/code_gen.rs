@@ -259,7 +259,7 @@ impl Generator {
         let t = self.consume_node(function, node)?;
 
         let instructions = match t {
-            Int | Bool => vec![Mov(
+            Int | Bool | Pointer(_) => vec![Mov(
                 Stack(-(self.scope_size() as i64), t.byte_size()),
                 Reg(match t.byte_size() {
                     1 => AL,
