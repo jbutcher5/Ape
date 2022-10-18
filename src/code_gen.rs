@@ -29,8 +29,8 @@ pub enum Node {
     Ident(String),
     Ref(Box<Node>),
     Deref(Box<Node>),
-    Define(String, Box<Node>),
-    Call(String, Vec<Node>),
+    Define(Box<Node>, Box<Node>),
+    Call(Box<Node>, Vec<Node>),
     Extern(String, Vec<Type>),
     If(Box<Node>, Vec<Node>),
 }
@@ -214,6 +214,79 @@ impl Generator {
         }
     }
 
+    fn handle_ident(&mut self, ident: &String, function: &String) -> Result<Type, String> {
+        let (address, t) = match self.get_variable(&ident) {
+            Some(x) => x,
+            None => return Err(format!("Unkown identifier `{ident}`")),
+        };
+
+        let instructions = match t {
+            Int => mov_reg(
+                match t.byte_size() {
+                    1 => AL,
+                    2 => AX,
+                    4 => EAX,
+                    8 => RAX,
+                    _ => {
+                        return Err(format!(
+                            "Unknown register for byte size `{}`",
+                            t.byte_size()
+                        ))
+                    }
+                },
+                address,
+            ),
+            _ => todo!(),
+        };
+
+        if let Some(func) = self.functions.get_mut(function) {
+            func.push(instructions);
+
+            Ok(t) // TODO: If t is an array this should become a pointer
+        } else {
+            Err(format!("Unknown function called `{function}`"))
+        }
+    }
+
+    fn handle_define(
+        &mut self,
+        function: &String,
+        ident: String,
+        node: Node,
+    ) -> Result<Type, String> {
+        use Type::*;
+
+        let t = self.consume_node(function, node)?;
+
+        let instructions = match t {
+            Int | Bool => vec![Mov(
+                Stack(-(self.scope_size() as i64), t.byte_size()),
+                Reg(match t.byte_size() {
+                    1 => AL,
+                    2 => AX,
+                    4 => EAX,
+                    8 => RAX,
+                    _ => {
+                        return Err(format!(
+                            "Unknown register for byte size `{}`",
+                            t.byte_size()
+                        ))
+                    }
+                }),
+            )],
+            _ => todo!(),
+        };
+
+        if let Some(func) = self.functions.get_mut(function) {
+            func.extend(instructions);
+            self.stack.push(Stack::Variable(ident, t));
+
+            Ok(Void)
+        } else {
+            Err(format!("Unknown function called `{function}`"))
+        }
+    }
+
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
         match node {
             Node::Literal(literal) => {
@@ -226,72 +299,27 @@ impl Generator {
                     Err(format!("Unknown function called `{function}`"))
                 }
             }
-            Node::Ident(ident) => {
-                let (address, t) = match self.get_variable(&ident) {
-                    Some(x) => x,
-                    None => return Err(format!("Unkown identifier `{ident}`")),
-                };
-
-                let instructions = match t {
-                    Int => mov_reg(
-                        match t.byte_size() {
-                            1 => AL,
-                            2 => AX,
-                            4 => EAX,
-                            8 => RAX,
-                            _ => {
-                                return Err(format!(
-                                    "Unknown register for byte size `{}`",
-                                    t.byte_size()
-                                ))
-                            }
-                        },
-                        address,
-                    ),
-                    _ => todo!(),
-                };
-
-                if let Some(func) = self.functions.get_mut(function) {
-                    func.push(instructions);
-
-                    Ok(t) // TODO: If t is an array this should become a pointer
+            Node::Ident(ident) => self.handle_ident(&ident, function),
+            Node::Define(ident_node, node) => {
+                if let Node::Ident(ident) = *ident_node {
+                    self.handle_define(function, ident, *node)
                 } else {
-                    Err(format!("Unknown function called `{function}`"))
+                    Err("Define's can only assign to identifiers".to_string())
                 }
             }
-            Node::Define(ident, node) => {
-                use Type::*;
-
-                let t = self.consume_node(function, *node)?;
-
-                let instructions = match t {
-                    Int | Bool => vec![Mov(
-                        Stack(-(self.scope_size() as i64), t.byte_size()),
-                        Reg(match t.byte_size() {
-                            1 => AL,
-                            2 => AX,
-                            4 => EAX,
-                            8 => RAX,
-                            _ => {
-                                return Err(format!(
-                                    "Unknown register for byte size `{}`",
-                                    t.byte_size()
-                                ))
-                            }
-                        }),
-                    )],
-                    _ => todo!(),
-                };
-
-                if let Some(func) = self.functions.get_mut(function) {
-                    func.extend(instructions);
-                    self.stack.push(Stack::Variable(ident, t));
-
-                    Ok(Void)
-                } else {
-                    Err(format!("Unknown function called `{function}`"))
-                }
-            }
+            Node::Ref(node) => match *node {
+                Node::Ident(ident) => match self.get_variable(&ident) {
+                    Some((address, t)) => match self.functions.get_mut(function) {
+                        Some(func) => {
+                            func.push(Lea(RAX, address));
+                            Ok(Type::Pointer(Box::new(t)))
+                        }
+                        None => Err(format!("Unknown function called `{function}`")),
+                    },
+                    None => Err(format!("Unkown identifier `{ident}`")),
+                },
+                _ => Err("Can only take the reference of an identifier".to_string()),
+            },
             _ => todo!(),
         }
     }

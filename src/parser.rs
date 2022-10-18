@@ -1,6 +1,5 @@
 use crate::code_gen::{Literal, Node, Type};
-
-#[derive(Debug, Clone)]
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub enum ParserNode {
     Int(i64),
     Call(Vec<ParserNode>),
@@ -13,6 +12,7 @@ impl TryFrom<&ParserNode> for Node {
     fn try_from(node: &ParserNode) -> Result<Self, Self::Error> {
         let _define = ParserNode::Ident("define".to_string());
         let _extern = ParserNode::Ident("extern".to_string());
+        let _reference = ParserNode::Ident("ref".to_string());
 
         fn convert_vec(nodes: &[ParserNode]) -> Result<Vec<Node>, &'static str> {
             let mut acc = vec![];
@@ -25,30 +25,52 @@ impl TryFrom<&ParserNode> for Node {
         }
 
         Ok(match node {
-            ParserNode::Call(array) => match array.as_slice() {
-                [_define, ParserNode::Ident(ident), value] => {
-                    Node::Define(ident.to_string(), Box::new(Node::try_from(value)?))
-                }
-                [_extern, ParserNode::Ident(ident), tail @ ..] => {
-                    let mut types = vec![];
-
-                    for t in tail {
-                        match t {
-                            ParserNode::Ident(t) => match Type::try_from(t.as_str()) {
-                                Ok(t) => types.push(t),
-                                _ => return Err("Type in an extern must reference a valid type"),
-                            },
-                            _ => return Err("Type cannot be a literal value."),
+            ParserNode::Call(array) => {
+                if let [head, tail @ ..] = array.as_slice() {
+                    if head == &_define {
+                        if let (Some(left), Some(right)) = (tail.get(0), tail.get(1)) {
+                            Node::Define(
+                                Box::new(Node::try_from(left)?),
+                                Box::new(Node::try_from(right)?),
+                            )
+                        } else {
+                            return Err("Define requires 2 parameters");
                         }
-                    }
+                    } else if head == &_extern {
+                        let mut types = vec![];
 
-                    Node::Extern(ident.to_string(), types)
+                        if tail.len() > 1 {
+                            return Err("An external function must specify a type");
+                        }
+
+                        for t in &tail[1..] {
+                            match t {
+                                ParserNode::Ident(t) => match Type::try_from(t.as_str()) {
+                                    Ok(t) => types.push(t),
+                                    _ => {
+                                        return Err("Type in an extern must reference a valid type")
+                                    }
+                                },
+                                _ => return Err("Type cannot be a literal value."),
+                            }
+                        }
+
+                        if let ParserNode::Ident(ident) = &tail[0] {
+                            Node::Extern(ident.to_string(), types)
+                        } else {
+                            return Err("First argument of an extern must be an identifier");
+                        }
+                    } else if head == &_reference {
+                        Node::Ref(Box::new(Node::try_from(
+                            tail.get(0).ok_or("Reference requires 1 parameter")?,
+                        )?))
+                    } else {
+                        Node::Call(Box::new(Node::try_from(head)?), convert_vec(tail)?)
+                    }
+                } else {
+                    return Err("A call requires a length of at least 1");
                 }
-                [ParserNode::Ident(ident), tail @ ..] => {
-                    Node::Call(ident.to_string(), convert_vec(tail)?)
-                }
-                _ => return Err("Call's must begin with an ident"),
-            },
+            }
             ParserNode::Int(value) => Node::Literal(Literal::Int(*value)),
             ParserNode::Ident(ident) => Node::Ident(ident.to_string()),
         })
