@@ -201,26 +201,55 @@ impl Generator {
         None
     }
 
-    fn move_literal(&mut self, register: Register, literal: &Literal) -> Vec<Instr> {
+    fn move_literal(
+        &mut self,
+        register: Register,
+        literal: &Literal,
+    ) -> Result<Vec<Instr>, String> {
         use Literal::*;
 
         match literal {
-            Int(x) => vec![Mov(register, Value(x.to_string()))],
-            Bool(x) => vec![Mov(register, Value((*x as i32).to_string()))],
+            Int(x) => Ok(vec![Mov(register, Value(x.to_string()))]),
+            Bool(x) => Ok(vec![Mov(register, Value((*x as i32).to_string()))]),
             Str(string) => {
                 let index = self.get_string(string.clone());
 
-                vec![Mov(register, Reg(Data(index)))]
+                Ok(vec![Mov(register, Reg(Data(index)))])
+            }
+            Array(array, t) => {
+                let mut instructions = vec![];
+
+                self.stack
+                    .push(Stack::Allocation(array.len() as u64 * t.byte_size()));
+
+                let mut bp_offset = self.scope_size();
+                let first = bp_offset;
+                for literal in array {
+                    if Type::from(literal) != *t {
+                        return Err(format!(
+                            "Array has type of {:?} but a literal has a type of {:?}",
+                            t,
+                            Type::from(literal)
+                        ));
+                    }
+
+                    instructions.extend(
+                        self.move_literal(Stack(bp_offset as i64, t.byte_size()), literal)?,
+                    );
+                    bp_offset += t.byte_size();
+                }
+
+                instructions.push(Lea(RAX, Stack(first as i64, t.byte_size())));
+                Ok(instructions)
             }
             _ => todo!(),
         }
     }
 
     fn handle_ident(&mut self, ident: &String, function: &String) -> Result<Type, String> {
-        let (address, t) = match self.get_variable(ident) {
-            Some(x) => x,
-            None => return Err(format!("Unkown identifier `{ident}`")),
-        };
+        let (address, t) = self
+            .get_variable(ident)
+            .ok_or(format!("Unkown identifier `{ident}`"))?;
 
         let instructions = match t {
             Int => mov_reg(
@@ -289,7 +318,7 @@ impl Generator {
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
         match node {
             Node::Literal(literal) => {
-                let instructions = self.move_literal(RAX, &literal);
+                let instructions = self.move_literal(RAX, &literal)?;
 
                 self.functions
                     .get_mut(function)
