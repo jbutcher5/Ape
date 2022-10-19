@@ -100,7 +100,7 @@ impl ByteSize for Type {
             Bool => 1,
             Str => 8,
             Array(length, t) => (*length as u64) * t.byte_size(),
-            Pointer(t) => t.byte_size(),
+            Pointer(_) => 8,
         }
     }
 }
