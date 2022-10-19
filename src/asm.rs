@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 #[inline]
 const fn name_size(size: &u64) -> &'static str {
     match size {
@@ -122,12 +124,10 @@ impl ToString for Register {
             Stack(i, size) => {
                 let position: i64 = *i - *size as i64;
 
-                if position == 0 {
-                    format!("{} [rbp]", name_size(size))
-                } else if position > 0 {
-                    format!("{} [rbp+{}]", name_size(size), position)
-                } else {
-                    format!("{} [rbp{}]", name_size(size), position)
+                match position.cmp(&0) {
+                    Ordering::Equal => format!("{} [rbp]", name_size(size)),
+                    Ordering::Greater => format!("{} [rbp+{position}]", name_size(size)),
+                    Ordering::Less => format!("{} [rbp{position}]", name_size(size)),
                 }
             }
             Data(index) => format!("s{index}"),

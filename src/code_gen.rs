@@ -39,6 +39,7 @@ pub enum Node {
 pub enum Stack {
     Variable(String, Type),
     Empty(u64),
+    Allocation(u64),
     BasePointer,
 }
 
@@ -117,6 +118,7 @@ impl ByteSize for Stack {
             Self::BasePointer => 8,
             Self::Empty(n) => *n,
             Self::Variable(_, t) => t.byte_size(),
+            Self::Allocation(n) => *n,
         }
     }
 }
@@ -215,7 +217,7 @@ impl Generator {
     }
 
     fn handle_ident(&mut self, ident: &String, function: &String) -> Result<Type, String> {
-        let (address, t) = match self.get_variable(&ident) {
+        let (address, t) = match self.get_variable(ident) {
             Some(x) => x,
             None => return Err(format!("Unkown identifier `{ident}`")),
         };
@@ -239,13 +241,12 @@ impl Generator {
             _ => todo!(),
         };
 
-        if let Some(func) = self.functions.get_mut(function) {
-            func.push(instructions);
+        self.functions
+            .get_mut(function)
+            .ok_or(format!("Unknown function called `{function}`"))?
+            .push(instructions);
 
-            Ok(t) // TODO: If t is an array this should become a pointer
-        } else {
-            Err(format!("Unknown function called `{function}`"))
-        }
+        Ok(t) // TODO: If t is an array this should become a pointer
     }
 
     fn handle_define(
@@ -277,14 +278,12 @@ impl Generator {
             _ => todo!(),
         };
 
-        if let Some(func) = self.functions.get_mut(function) {
-            func.extend(instructions);
-            self.stack.push(Stack::Variable(ident, t));
-
-            Ok(Void)
-        } else {
-            Err(format!("Unknown function called `{function}`"))
-        }
+        self.functions
+            .get_mut(function)
+            .ok_or(format!("Unknown function called `{function}`"))?
+            .extend(instructions);
+        self.stack.push(Stack::Variable(ident, t));
+        Ok(Void)
     }
 
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
@@ -292,12 +291,11 @@ impl Generator {
             Node::Literal(literal) => {
                 let instructions = self.move_literal(RAX, &literal);
 
-                if let Some(func) = self.functions.get_mut(function) {
-                    func.extend(instructions);
-                    Ok(Type::from(&literal))
-                } else {
-                    Err(format!("Unknown function called `{function}`"))
-                }
+                self.functions
+                    .get_mut(function)
+                    .ok_or(format!("Unknown function called `{function}`"))?
+                    .extend(instructions);
+                Ok(Type::from(&literal))
             }
             Node::Ident(ident) => self.handle_ident(&ident, function),
             Node::Define(ident_node, node) => {
@@ -309,13 +307,13 @@ impl Generator {
             }
             Node::Ref(node) => match *node {
                 Node::Ident(ident) => match self.get_variable(&ident) {
-                    Some((address, t)) => match self.functions.get_mut(function) {
-                        Some(func) => {
-                            func.push(Lea(RAX, address));
-                            Ok(Type::Pointer(Box::new(t)))
-                        }
-                        None => Err(format!("Unknown function called `{function}`")),
-                    },
+                    Some((address, t)) => {
+                        self.functions
+                            .get_mut(function)
+                            .ok_or(format!("Unknown function called `{function}`"))?
+                            .push(Lea(RAX, address));
+                        Ok(Type::Pointer(Box::new(t)))
+                    }
                     None => Err(format!("Unkown identifier `{ident}`")),
                 },
                 _ => Err("Can only take the reference of an identifier".to_string()),
@@ -326,9 +324,7 @@ impl Generator {
 
     pub fn apply(&mut self, nodes: Vec<Node>) -> Result<(), String> {
         for node in nodes {
-            if let Err(err) = self.consume_node(&"main".to_string(), node) {
-                return Err(err);
-            }
+            self.consume_node(&"main".to_string(), node)?;
         }
 
         Ok(())
