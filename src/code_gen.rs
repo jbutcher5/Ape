@@ -1,7 +1,7 @@
 use crate::asm;
 
 use asm::{Instr::*, Operand::*, Register::*, *};
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::format};
 use Type::*;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -27,12 +27,7 @@ pub enum Type {
 pub enum Node {
     Literal(Literal),
     Ident(String),
-    Ref(Box<Node>),
-    Deref(Box<Node>),
-    Define(Box<Node>, Box<Node>),
-    Call(Box<Node>, Vec<Node>),
-    Extern(String, Vec<Type>),
-    If(Box<Node>, Vec<Node>),
+    Bracket(Vec<Node>),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -316,6 +311,9 @@ impl Generator {
     }
 
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
+        let _reference: Node = Node::Ident("ref".to_string());
+        let _define: Node = Node::Ident("define".to_string());
+
         match node {
             Node::Literal(literal) => {
                 let instructions = self.move_literal(RAX, &literal)?;
@@ -327,25 +325,42 @@ impl Generator {
                 Ok(Type::from(&literal))
             }
             Node::Ident(ident) => self.handle_ident(&ident, function),
-            Node::Define(ident_node, node) => {
-                if let Node::Ident(ident) = *ident_node {
-                    self.handle_define(function, ident, *node)
-                } else {
-                    Err("Define's can only assign to identifiers".to_string())
-                }
-            }
-            Node::Ref(node) => match *node {
-                Node::Ident(ident) => match self.get_variable(&ident) {
-                    Some((address, t)) => {
-                        self.functions
-                            .get_mut(function)
-                            .ok_or(format!("Unknown function called `{function}`"))?
-                            .push(Lea(RAX, address));
-                        Ok(Type::Pointer(Box::new(t)))
+            Node::Bracket(nodes) => match nodes.get(0).ok_or("Cannot have empty brackets")? {
+                Node::Ident(ident) => match ident.as_str() {
+                    "ref" => match nodes.get(1).ok_or("ref must have 1 parameter")? {
+                        Node::Ident(ident) => match self.get_variable(&ident) {
+                            Some((address, t)) => {
+                                self.functions
+                                    .get_mut(function)
+                                    .ok_or(format!("Unknown function called `{function}`"))?
+                                    .push(Lea(RAX, address));
+                                Ok(Type::Pointer(Box::new(t)))
+                            }
+                            None => Err(format!("Unkown identifier `{ident}`")),
+                        },
+                        _ => Err("Can only take the reference of an identifier".to_string()),
+                    },
+
+                    "define" => {
+                        if let Node::Ident(ident) = nodes
+                            .get(1)
+                            .ok_or("Define expects 2 parameters".to_string())?
+                        {
+                            self.handle_define(
+                                function,
+                                ident.to_string(),
+                                nodes
+                                    .get(2)
+                                    .ok_or("Define expects 2 parameters".to_string())?
+                                    .clone(),
+                            )
+                        } else {
+                            Err("Define's can only assign to identifiers".to_string())
+                        }
                     }
-                    None => Err(format!("Unkown identifier `{ident}`")),
+                    _ => todo!(),
                 },
-                _ => Err("Can only take the reference of an identifier".to_string()),
+                _ => todo!(),
             },
             _ => todo!(),
         }

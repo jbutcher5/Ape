@@ -1,9 +1,9 @@
 use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Token {
-    OpenParens,
-    CloseParens,
+    OpenBracket,
+    CloseBracket,
     Number(i64),
     String(String),
     Ident(String),
@@ -54,13 +54,18 @@ impl Lexer {
 
         while let Some(token) = self.curr() {
             tokens.push(match token {
-                b'(' => Token::OpenParens,
-                b')' => Token::CloseParens,
+                b'(' => {
+                    self.inc();
+                    Token::OpenBracket
+                }
+                b')' => {
+                    self.inc();
+                    Token::CloseBracket
+                }
                 b'"' => self.handle_string(),
                 b'0'..=b'9' => self.handle_number(),
                 _ => self.handle_ident(),
             });
-            self.inc();
             self.skip_whitespace();
         }
 
@@ -71,12 +76,11 @@ impl Lexer {
         let mut acc = vec![];
 
         while let Some(c) = self.curr() {
-            self.inc();
-
-            if c == b'"' {
-                break;
-            } else {
+            if c != b'"' {
                 acc.push(c);
+                self.inc();
+            } else {
+                break;
             }
         }
 
@@ -87,14 +91,15 @@ impl Lexer {
         let mut acc = vec![];
 
         while let Some(c) = self.curr() {
-            self.inc();
-
-            if c.is_ascii_digit() || c == b'.' {
+            if c.is_ascii_digit() {
                 acc.push(c);
+                self.inc();
             } else {
                 break;
             }
         }
+
+        println!("{:?}", self.curr().map(|x| x as char));
 
         Token::Number(String::from_utf8(acc).unwrap().parse::<i64>().unwrap())
     }
@@ -103,10 +108,9 @@ impl Lexer {
         let mut acc = vec![];
 
         while let Some(c) = self.curr() {
-            self.inc();
-
             if c != b'(' && c != b')' && c != b'"' && c != b' ' && c != b'\n' {
                 acc.push(c);
+                self.inc();
             } else {
                 break;
             }
@@ -114,10 +118,4 @@ impl Lexer {
 
         Token::Ident(String::from_utf8(acc).unwrap())
     }
-}
-
-impl TryFrom<Vec<Token>> for Vec<Node> {
-    type Error = String;
-
-    fn try_from(tokens: Vec<Token>) -> Result<Vec<Node>, Self::Error> {}
 }
