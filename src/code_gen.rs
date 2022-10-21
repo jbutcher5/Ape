@@ -1,7 +1,7 @@
 use crate::asm;
 
 use asm::{Instr::*, Operand::*, Register::*, *};
-use std::{collections::HashMap, fmt::format};
+use std::collections::HashMap;
 use Type::*;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -10,7 +10,6 @@ pub enum Literal {
     Bool(bool),
     Str(String),
     Array(Vec<Literal>, Type),
-    Pointer(Register, Type),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -45,7 +44,6 @@ impl From<&Literal> for Type {
             Literal::Bool(_) => Bool,
             Literal::Str(_) => Str,
             Literal::Array(arr, t) => Array(arr.len(), Box::new(t.clone())),
-            Literal::Pointer(_, t) => t.clone(),
         }
     }
 }
@@ -237,7 +235,6 @@ impl Generator {
                 instructions.push(Lea(RAX, Stack(first as i64, t.byte_size())));
                 Ok(instructions)
             }
-            _ => todo!(),
         }
     }
 
@@ -247,7 +244,7 @@ impl Generator {
             .ok_or(format!("Unkown identifier `{ident}`"))?;
 
         let instructions = match t {
-            Int => mov_reg(
+            Int | Bool => mov_reg(
                 match t.byte_size() {
                     1 => AL,
                     2 => AX,

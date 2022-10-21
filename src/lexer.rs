@@ -5,6 +5,7 @@ pub enum Token {
     OpenBracket,
     CloseBracket,
     Number(i64),
+    Boolean(bool),
     String(String),
     Ident(String),
 }
@@ -47,7 +48,7 @@ impl Lexer {
         }
     }
 
-    pub fn tokenise(&mut self) -> Vec<Token> {
+    pub fn tokenise(&mut self) -> Result<Vec<Token>, String> {
         let mut tokens: Vec<Token> = vec![];
 
         self.skip_whitespace();
@@ -62,32 +63,50 @@ impl Lexer {
                     self.inc();
                     Token::CloseBracket
                 }
-                b'"' => self.handle_string(),
-                b'0'..=b'9' => self.handle_number(),
+                b'#' => {
+                    self.inc();
+
+                    self.curr()
+                        .map(|c| match c {
+                            b't' => Ok(Token::Boolean(true)),
+                            b'f' => Ok(Token::Boolean(false)),
+                            _ => Err(format!(
+                                "Boolean must be either #t or #f not #{}",
+                                c as char
+                            )),
+                        })
+                        .ok_or("A second character must follow a #".to_string())??
+                }
+                b'"' => self.handle_string()?,
+                b'0'..=b'9' => self.handle_number()?,
                 _ => self.handle_ident(),
             });
             self.skip_whitespace();
         }
 
-        tokens
+        Ok(tokens)
     }
 
-    fn handle_string(&mut self) -> Token {
+    fn handle_string(&mut self) -> Result<Token, String> {
         let mut acc = vec![];
 
-        while let Some(c) = self.curr() {
-            if c != b'"' {
-                acc.push(c);
-                self.inc();
-            } else {
-                break;
+        loop {
+            match self.curr() {
+                Some(b'"') => break,
+                Some(c) => {
+                    acc.push(c);
+                    self.inc();
+                }
+                None => return Err("Unclosed \"".to_string()),
             }
         }
 
-        Token::String(String::from_utf8(acc).unwrap())
+        Ok(Token::String(String::from_utf8(acc).map_err(|_| {
+            "Error converting utf8 bytes to String".to_string()
+        })?))
     }
 
-    fn handle_number(&mut self) -> Token {
+    fn handle_number(&mut self) -> Result<Token, String> {
         let mut acc = vec![];
 
         while let Some(c) = self.curr() {
@@ -99,9 +118,12 @@ impl Lexer {
             }
         }
 
-        println!("{:?}", self.curr().map(|x| x as char));
-
-        Token::Number(String::from_utf8(acc).unwrap().parse::<i64>().unwrap())
+        Ok(Token::Number(
+            String::from_utf8(acc)
+                .map_err(|_| "Error converting utf8 bytes to String".to_string())?
+                .parse::<i64>()
+                .map_err(|_| "Error converting String to signed 64-bit number")?,
+        ))
     }
 
     fn handle_ident(&mut self) -> Token {

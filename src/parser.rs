@@ -37,6 +37,7 @@ pub fn parse(mut tokens: Vec<Token>) -> Result<Vec<Node>, String> {
             Token::Ident(ident) => Node::Ident(ident),
             Token::Number(n) => Node::Literal(Literal::Int(n)),
             Token::String(str) => Node::Literal(Literal::Str(str)),
+            Token::Boolean(b) => Node::Literal(Literal::Bool(b)),
             Token::CloseBracket => return Err("Out of place close brackets".to_string()),
         });
     }
