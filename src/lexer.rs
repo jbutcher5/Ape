@@ -4,6 +4,7 @@ use std::path::Path;
 pub enum Token {
     OpenBracket,
     CloseBracket,
+    Octothorpe,
     Number(i64),
     Boolean(bool),
     String(String),
@@ -42,6 +43,10 @@ impl Lexer {
         self.index += 1;
     }
 
+    fn dec(&mut self) {
+        self.index -= 1;
+    }
+
     fn skip_whitespace(&mut self) {
         while let Some(b'\n' | b' ') = self.curr() {
             self.inc();
@@ -63,20 +68,7 @@ impl Lexer {
                     self.inc();
                     Token::CloseBracket
                 }
-                b'#' => {
-                    self.inc();
-
-                    self.curr()
-                        .map(|c| match c {
-                            b't' => Ok(Token::Boolean(true)),
-                            b'f' => Ok(Token::Boolean(false)),
-                            _ => Err(format!(
-                                "Boolean must be either #t or #f not #{}",
-                                c as char
-                            )),
-                        })
-                        .ok_or("A second character must follow a #".to_string())??
-                }
+                b'#' => self.handle_octothorpe()?,
                 b'"' => self.handle_string()?,
                 b'0'..=b'9' => self.handle_number()?,
                 _ => self.handle_ident(),
@@ -85,6 +77,21 @@ impl Lexer {
         }
 
         Ok(tokens)
+    }
+
+    fn handle_octothorpe(&mut self) -> Result<Token, String> {
+        self.index += 2;
+
+        self.curr()
+            .map(|c| match c {
+                b't' => Ok(Token::Boolean(true)),
+                b'f' => Ok(Token::Boolean(false)),
+                _ => {
+                    self.dec();
+                    Ok(Token::Octothorpe)
+                }
+            })
+            .ok_or("A second character must follow a #".to_string())?
     }
 
     fn handle_string(&mut self) -> Result<Token, String> {

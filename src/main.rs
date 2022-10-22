@@ -7,9 +7,11 @@ fn main() -> io::Result<()> {
     let mut lexer = Lexer::try_from(Path::new("test.ape"))?;
     let mut generator = Generator::default();
 
-    generator
-        .apply(parse(lexer.tokenise().unwrap()).unwrap())
-        .unwrap();
+    let tokens = lexer.tokenise().unwrap();
+
+    let ast = parse(tokens).unwrap();
+
+    generator.apply(ast).unwrap();
 
     let mut file = File::create("out.asm")?;
     file.write_all(&generator.export())?;

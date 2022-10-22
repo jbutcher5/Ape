@@ -9,7 +9,7 @@ pub enum Literal {
     Int(i64),
     Bool(bool),
     Str(String),
-    Array(Vec<Literal>, Type),
+    Array(Vec<Node>, Option<Type>),
 }
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -43,7 +43,13 @@ impl From<&Literal> for Type {
             Literal::Int(_) => Int,
             Literal::Bool(_) => Bool,
             Literal::Str(_) => Str,
-            Literal::Array(arr, t) => Array(arr.len(), Box::new(t.clone())),
+            Literal::Array(arr, t) => Array(
+                arr.len(),
+                Box::new(match t {
+                    Some(t) => t.clone(),
+                    None => panic!("Array has an unkown type"),
+                }),
+            ),
         }
     }
 }
@@ -196,44 +202,89 @@ impl Generator {
 
     fn move_literal(
         &mut self,
+        function: &String,
         register: Register,
         literal: &Literal,
-    ) -> Result<Vec<Instr>, String> {
+    ) -> Result<Type, String> {
         use Literal::*;
 
         match literal {
-            Int(x) => Ok(vec![Mov(register, Value(x.to_string()))]),
-            Bool(x) => Ok(vec![Mov(register, Value((*x as i32).to_string()))]),
+            Int(x) => {
+                self.functions
+                    .get_mut(function)
+                    .ok_or(format!("Unknown function called `{function}`"))?
+                    .push(Mov(register, Value(x.to_string())));
+
+                Ok(Type::from(literal))
+            }
+            Bool(x) => {
+                self.functions
+                    .get_mut(function)
+                    .ok_or(format!("Unknown function called `{function}`"))?
+                    .push(Mov(register, Value((*x as i32).to_string())));
+
+                Ok(Type::from(literal))
+            }
             Str(string) => {
                 let index = self.get_string(string.clone());
 
-                Ok(vec![Mov(register, Reg(Data(index)))])
+                self.functions
+                    .get_mut(function)
+                    .ok_or(format!("Unknown function called `{function}`"))?
+                    .push(Mov(register, Reg(Data(index))));
+
+                Ok(Type::from(literal))
             }
-            Array(array, t) => {
-                let mut instructions = vec![];
-
-                self.stack
-                    .push(Stack::Allocation(array.len() as u64 * t.byte_size()));
-
+            Array(array, array_type) => {
                 let mut bp_offset = self.scope_size();
+                let mut t: Option<Type> = array_type.clone();
+
                 let first = bp_offset;
-                for literal in array {
-                    if Type::from(literal) != *t {
-                        return Err(format!(
-                            "Array has type of {:?} but a literal has a type of {:?}",
-                            t,
-                            Type::from(literal)
+                for node in array {
+                    let node_type = self.consume_node(function, node.clone())?;
+
+                    if t.as_ref().is_none() {
+                        t = Some(node_type.clone());
+                        self.stack.push(Stack::Allocation(
+                            array.len() as u64 * node_type.byte_size(),
                         ));
                     }
 
-                    instructions.extend(
-                        self.move_literal(Stack(bp_offset as i64, t.byte_size()), literal)?,
-                    );
-                    bp_offset += t.byte_size();
+                    if node_type != t.clone().ok_or("Array has an unknown type".to_string())? {
+                        return Err(format!(
+                            "Array has type of {:?} but an item has a type of {:?}",
+                            &t, node_type
+                        ));
+                    }
+
+                    self.functions
+                        .get_mut(function)
+                        .ok_or(format!("Unknown function called `{function}`"))?
+                        .push(mov_reg(
+                            Stack(
+                                -(bp_offset as i64),
+                                t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
+                            ),
+                            RAX,
+                        ));
+
+                    bp_offset += t.as_ref().ok_or("Array has an unknown type")?.byte_size();
                 }
 
-                instructions.push(Lea(RAX, Stack(first as i64, t.byte_size())));
-                Ok(instructions)
+                self.functions
+                    .get_mut(function)
+                    .ok_or(format!("Unknown function called `{function}`"))?
+                    .push(Lea(
+                        RAX,
+                        Stack(
+                            first as i64,
+                            t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
+                        ),
+                    ));
+
+                Ok(Type::Pointer(Box::new(
+                    t.ok_or("Array has an unknown type")?.clone(),
+                )))
             }
         }
     }
@@ -312,15 +363,7 @@ impl Generator {
         let _define: Node = Node::Ident("define".to_string());
 
         match node {
-            Node::Literal(literal) => {
-                let instructions = self.move_literal(RAX, &literal)?;
-
-                self.functions
-                    .get_mut(function)
-                    .ok_or(format!("Unknown function called `{function}`"))?
-                    .extend(instructions);
-                Ok(Type::from(&literal))
-            }
+            Node::Literal(literal) => self.move_literal(function, RAX, &literal),
             Node::Ident(ident) => self.handle_ident(&ident, function),
             Node::Bracket(nodes) => match nodes.get(0).ok_or("Cannot have empty brackets")? {
                 Node::Ident(ident) => match ident.as_str() {
@@ -359,7 +402,6 @@ impl Generator {
                 },
                 _ => todo!(),
             },
-            _ => todo!(),
         }
     }
 
