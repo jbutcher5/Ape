@@ -98,19 +98,20 @@ impl Lexer {
         let mut acc = vec![];
 
         loop {
-            match self.curr() {
-                Some(b'"') => break,
-                Some(c) => {
-                    acc.push(c);
-                    self.inc();
-                }
-                None => return Err("Unclosed \"".to_string()),
+            self.inc();
+
+            if let Some(b'"') = self.curr() {
+                self.inc();
+
+                return Ok(Token::String(String::from_utf8(acc).map_err(|_| {
+                    "Error converting utf8 bytes to String".to_string()
+                })?));
+            } else if let Some(c) = self.curr() {
+                acc.push(c);
+            } else {
+                return Err("FOO".to_string());
             }
         }
-
-        Ok(Token::String(String::from_utf8(acc).map_err(|_| {
-            "Error converting utf8 bytes to String".to_string()
-        })?))
     }
 
     fn handle_number(&mut self) -> Result<Token, String> {

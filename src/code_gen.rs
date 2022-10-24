@@ -127,18 +127,29 @@ pub struct Generator {
     stack: Vec<Stack>,
     externs: HashMap<String, Vec<Type>>,
     functions: HashMap<String, Vec<Instr>>,
+    function_signatures: HashMap<String, Vec<Type>>,
     data: Vec<String>,
 }
 
 impl Default for Generator {
     fn default() -> Self {
-        let mut initial = HashMap::new();
-        initial.insert("main".to_string(), vec![Mov(RBP, Reg(RSP))]);
+        let mut init_func = HashMap::new();
+        init_func.insert("main".to_string(), vec![Mov(RBP, Reg(RSP))]);
+
+        let mut init_func_sig = HashMap::new();
+        init_func_sig.insert("main".to_string(), vec![Void]);
+        init_func_sig.insert("printf".to_string(), vec![Void, Str, Int]);
+
+        // TODO: Remove this code before push
+
+        let mut init_extern = HashMap::new();
+        init_extern.insert("printf".to_string(), vec![]);
 
         Self {
             stack: vec![],
-            externs: HashMap::new(),
-            functions: initial.clone(),
+            externs: init_extern,
+            functions: init_func,
+            function_signatures: init_func_sig,
             data: vec![],
         }
     }
@@ -358,6 +369,69 @@ impl Generator {
         Ok(Void)
     }
 
+    fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
+        const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
+        let mut parameter_address = vec![];
+        let func = if let Some(Node::Ident(func)) = nodes.get(0) {
+            func
+        } else {
+            return Err("Could not find a function to call".to_string());
+        };
+
+        for node in nodes[1..].into_iter().rev() {
+            let t = self.consume_node(function, node.clone())?;
+            let address = Stack(self.scope_size() as i64, t.byte_size());
+
+            self.functions
+                .get_mut(function)
+                .ok_or("Unknown function called `{function}`")?
+                .push(mov_reg(address.clone(), RAX));
+
+            parameter_address.push(address);
+            self.stack.push(Stack::Allocation(t.byte_size()));
+        }
+
+        for i in 0..parameter_address.len().min(7) {
+            self.functions
+                .get_mut(function)
+                .ok_or("Unknown function called `{function}`")?
+                .push(mov_reg(
+                    REGSITERS64[i].clone(),
+                    parameter_address[parameter_address.len() - (i + 1)].clone(),
+                ));
+        }
+
+        for _ in parameter_address {
+            self.stack
+                .pop()
+                .ok_or("Parameter address and scope stack out of sync".to_string())?;
+        }
+
+        // TODO: Align stack
+
+        self.functions
+            .get_mut(function)
+            .ok_or("Unknown function called `{function}`")?
+            .push(Add(RSP, Value(8.to_string())));
+
+        self.functions
+            .get_mut(function)
+            .ok_or("Unknown function called `{function}`")?
+            .push(NullReg(RAX));
+
+        self.functions
+            .get_mut(function)
+            .ok_or("Unknown function called `{function}`")?
+            .push(Call(func.to_string()));
+
+        self.function_signatures
+            .get(func)
+            .ok_or("No function called `{func}`".to_string())?
+            .get(0)
+            .map(|x| x.clone())
+            .ok_or("Function `{func}` has no return type".to_string())
+    }
+
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
         let _reference: Node = Node::Ident("ref".to_string());
         let _define: Node = Node::Ident("define".to_string());
@@ -398,7 +472,7 @@ impl Generator {
                             Err("Define's can only assign to identifiers".to_string())
                         }
                     }
-                    _ => todo!(),
+                    _ => self.handle_call(function, nodes),
                 },
                 _ => todo!(),
             },
