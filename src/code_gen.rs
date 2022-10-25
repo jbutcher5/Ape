@@ -122,7 +122,16 @@ impl ByteSize for Stack {
     }
 }
 
-#[derive(Debug)]
+fn func_param_stack_alloc(parameters: &Vec<Type>) -> u64 {
+    if parameters.len() < 7 {
+        0
+    } else {
+        let stack_params = &parameters[7..];
+        stack_params.into_iter().map(Type::byte_size).sum()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Generator {
     stack: Vec<Stack>,
     externs: HashMap<String, Vec<Type>>,
@@ -371,6 +380,7 @@ impl Generator {
 
     fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
         const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
+
         let mut parameter_address = vec![];
         let func = if let Some(Node::Ident(func)) = nodes.get(0) {
             func
@@ -378,7 +388,24 @@ impl Generator {
             return Err("Could not find a function to call".to_string());
         };
 
-        for node in nodes[1..].into_iter().rev() {
+        let func_signature = self
+            .function_signatures
+            .get(func)
+            .ok_or("Function `{func}` has no type signature".to_string())?
+            .clone();
+
+        let stack_offet =
+            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&func_signature));
+
+        if stack_offet > 0 {
+            self.stack.push(Stack::Empty(stack_offet));
+        }
+
+        for (node, expected_type) in nodes[1..]
+            .into_iter()
+            .rev()
+            .zip(func_signature.into_iter().rev())
+        {
             let t = self.consume_node(function, node.clone())?;
             let address = Stack(self.scope_size() as i64, t.byte_size());
 
@@ -386,6 +413,13 @@ impl Generator {
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(address.clone(), RAX));
+
+            if t != expected_type.clone() {
+                return Err(format!(
+                    "In a call to {func} expected a {:?} but got a {:?}",
+                    expected_type, t
+                ));
+            }
 
             parameter_address.push(address);
             self.stack.push(Stack::Allocation(t.byte_size()));
@@ -407,22 +441,12 @@ impl Generator {
                 .ok_or("Parameter address and scope stack out of sync".to_string())?;
         }
 
-        // TODO: Align stack
+        let call_func = [NullReg(RAX), Call(func.to_string())];
 
         self.functions
             .get_mut(function)
             .ok_or("Unknown function called `{function}`")?
-            .push(Add(RSP, Value(8.to_string())));
-
-        self.functions
-            .get_mut(function)
-            .ok_or("Unknown function called `{function}`")?
-            .push(NullReg(RAX));
-
-        self.functions
-            .get_mut(function)
-            .ok_or("Unknown function called `{function}`")?
-            .push(Call(func.to_string()));
+            .extend(call_func);
 
         self.function_signatures
             .get(func)
