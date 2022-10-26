@@ -37,6 +37,21 @@ pub enum Stack {
     BasePointer,
 }
 
+#[derive(Clone, Eq, PartialEq, Debug)]
+pub struct FuncSignature {
+    types: Vec<Type>,
+    additional_arguments: bool,
+}
+
+impl FuncSignature {
+    fn new(types: Vec<Type>, additional_arguments: bool) -> Self {
+        Self {
+            types,
+            additional_arguments,
+        }
+    }
+}
+
 impl From<&Literal> for Type {
     fn from(literal: &Literal) -> Self {
         match literal {
@@ -96,7 +111,8 @@ pub trait ByteSize {
 impl ByteSize for Type {
     fn byte_size(&self) -> u64 {
         match self {
-            Int | Void => 8,
+            Void => 0,
+            Int => 8,
             Bool => 1,
             Str => 8,
             Array(length, t) => (*length as u64) * t.byte_size(),
@@ -136,7 +152,7 @@ pub struct Generator {
     stack: Vec<Stack>,
     externs: HashMap<String, Vec<Type>>,
     functions: HashMap<String, Vec<Instr>>,
-    function_signatures: HashMap<String, Vec<Type>>,
+    function_signatures: HashMap<String, FuncSignature>,
     data: Vec<String>,
 }
 
@@ -146,8 +162,11 @@ impl Default for Generator {
         init_func.insert("main".to_string(), vec![Mov(RBP, Reg(RSP))]);
 
         let mut init_func_sig = HashMap::new();
-        init_func_sig.insert("main".to_string(), vec![Void]);
-        init_func_sig.insert("printf".to_string(), vec![Void, Str, Int]);
+        init_func_sig.insert("main".to_string(), FuncSignature::new(vec![Void], false));
+        init_func_sig.insert(
+            "printf".to_string(),
+            FuncSignature::new(vec![Void, Str], true),
+        );
 
         // TODO: Remove this code before push
 
@@ -394,18 +413,38 @@ impl Generator {
             .ok_or("Function `{func}` has no type signature".to_string())?
             .clone();
 
+        let mut node_types = vec![];
+        for node in nodes[1..].iter() {
+            node_types.push(self.node_type(node)?);
+        }
+
+        // Validate node types
+
+        for (index, node_type) in node_types.iter().enumerate() {
+            if index > func_signature.types.len() && !func_signature.additional_arguments {
+                return Err(format!("Too many arguments passed to function `{func}`"));
+            } else if !func_signature.additional_arguments {
+                let expected_type = &func_signature.types[index + 1];
+
+                if node_type != expected_type {
+                    return Err(format!(
+                        "In a call to {func} expected a {:?} but got a {:?}",
+                        expected_type, node_type
+                    ));
+                }
+            } else {
+                break;
+            }
+        }
+
         let stack_offet =
-            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&func_signature));
+            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types));
 
         if stack_offet > 0 {
             self.stack.push(Stack::Empty(stack_offet));
         }
 
-        for (node, expected_type) in nodes[1..]
-            .into_iter()
-            .rev()
-            .zip(func_signature.into_iter().rev())
-        {
+        for node in nodes[1..].into_iter().rev() {
             let t = self.consume_node(function, node.clone())?;
             let address = Stack(self.scope_size() as i64, t.byte_size());
 
@@ -413,13 +452,6 @@ impl Generator {
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(address.clone(), RAX));
-
-            if t != expected_type.clone() {
-                return Err(format!(
-                    "In a call to {func} expected a {:?} but got a {:?}",
-                    expected_type, t
-                ));
-            }
 
             parameter_address.push(address);
             self.stack.push(Stack::Allocation(t.byte_size()));
@@ -451,9 +483,45 @@ impl Generator {
         self.function_signatures
             .get(func)
             .ok_or("No function called `{func}`".to_string())?
+            .types
             .get(0)
             .map(|x| x.clone())
             .ok_or("Function `{func}` has no return type".to_string())
+    }
+
+    fn node_type(&self, node: &Node) -> Result<Type, String> {
+        match node {
+            Node::Literal(literal) => Ok(Type::from(literal)),
+            Node::Ident(ident) => self
+                .get_variable(ident)
+                .ok_or(format!("Unkown identifier `{ident}`"))
+                .map(|(_, t)| t),
+            Node::Bracket(nodes) => match nodes.get(0).ok_or("Cannot have empty brackets")? {
+                Node::Ident(ident) => match ident.as_str() {
+                    "ref" => match nodes.get(1).ok_or("ref must have 1 parameter")? {
+                        Node::Ident(ident) => {
+                            let t = self
+                                .get_variable(ident)
+                                .ok_or(format!("Unkown identifier `{ident}`"))?
+                                .1;
+
+                            Ok(Pointer(Box::new(t)))
+                        }
+                        _ => todo!(),
+                    },
+                    "extern" | "define" => Ok(Void),
+                    _ => self
+                        .function_signatures
+                        .get(ident)
+                        .ok_or(format!("Unknown function called `{ident}`"))?
+                        .types
+                        .get(0)
+                        .ok_or(format!("Function `{ident}` specifies no return type"))
+                        .map(|x| x.clone()),
+                },
+                _ => todo!(),
+            },
+        }
     }
 
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
