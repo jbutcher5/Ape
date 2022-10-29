@@ -400,6 +400,8 @@ impl Generator {
     fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
         const REGSITERS64: [Register; 6] = [RDI, RSI, RDX, RCX, R(8), R(9)];
 
+        // Get function infomation
+
         let mut parameter_address = vec![];
         let func = if let Some(Node::Ident(func)) = nodes.get(0) {
             func
@@ -437,6 +439,9 @@ impl Generator {
             }
         }
 
+        // Calculate required C calling convention stack offset
+        // the stack must be aligned to a multiple of 16
+
         let stack_offet =
             next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
 
@@ -451,6 +456,8 @@ impl Generator {
         let mut rsp_parameter_offset = 0;
 
         for node in nodes[1..].into_iter().rev() {
+            // Evaluate each parameter and push it onto the stack
+
             let t = self.consume_node(function, node.clone())?;
             let address = Stack(-(self.scope_size() as i64), t.byte_size());
 
@@ -459,11 +466,14 @@ impl Generator {
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(address.clone(), RAX));
 
-            rsp_parameter_offset += t.byte_size() as i64;
+            // Update the virtual stack within the compiler
 
+            rsp_parameter_offset += t.byte_size() as i64;
             parameter_address.push((address, t.byte_size() as i64));
             self.stack.push(Stack::Allocation(t.byte_size()));
         }
+
+        // Move the first six parameters off the stack and into registers
 
         for i in 0..parameter_address.len().min(6) {
             self.functions
@@ -479,6 +489,8 @@ impl Generator {
             rsp_parameter_offset -= parameter_address[parameter_address.len() - (i + 1)].1;
         }
 
+        // Pop all of the parameters off the stack
+
         for _ in parameter_address {
             self.stack
                 .pop()
@@ -489,6 +501,7 @@ impl Generator {
             Sub(RSP, Value(rsp_parameter_offset.to_string())),
             NullReg(RAX),
             Call(func.to_string()),
+            Add(RSP, Value(rsp_parameter_offset.to_string())),
         ];
 
         self.functions
