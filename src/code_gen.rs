@@ -398,7 +398,7 @@ impl Generator {
     }
 
     fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
-        const REGSITERS64: [Register; 6] = [RDI, RSI, RCX, RDX, R(8), R(9)];
+        const REGSITERS64: [Register; 6] = [RDI, RSI, RDX, RCX, R(8), R(9)];
 
         let mut parameter_address = vec![];
         let func = if let Some(Node::Ident(func)) = nodes.get(0) {
@@ -438,33 +438,45 @@ impl Generator {
         }
 
         let stack_offet =
-            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types));
+            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
 
         if stack_offet > 0 {
             self.stack.push(Stack::Empty(stack_offet));
+            self.functions
+                .get_mut(function)
+                .ok_or("Unknown function called `{function}`")?
+                .push(Sub(RSP, Value(stack_offet.to_string())));
         }
+
+        let mut rsp_parameter_offset = 0;
 
         for node in nodes[1..].into_iter().rev() {
             let t = self.consume_node(function, node.clone())?;
-            let address = Stack(self.scope_size() as i64, t.byte_size());
+            let address = Stack(-(self.scope_size() as i64), t.byte_size());
 
             self.functions
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(address.clone(), RAX));
 
-            parameter_address.push(address);
+            rsp_parameter_offset += t.byte_size() as i64;
+
+            parameter_address.push((address, t.byte_size() as i64));
             self.stack.push(Stack::Allocation(t.byte_size()));
         }
 
-        for i in 0..parameter_address.len().min(7) {
+        for i in 0..parameter_address.len().min(6) {
             self.functions
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(
                     REGSITERS64[i].clone(),
-                    parameter_address[parameter_address.len() - (i + 1)].clone(),
+                    parameter_address[parameter_address.len() - (i + 1)]
+                        .0
+                        .clone(),
                 ));
+
+            rsp_parameter_offset -= parameter_address[parameter_address.len() - (i + 1)].1;
         }
 
         for _ in parameter_address {
@@ -473,7 +485,11 @@ impl Generator {
                 .ok_or("Parameter address and scope stack out of sync".to_string())?;
         }
 
-        let call_func = [NullReg(RAX), Call(func.to_string())];
+        let call_func = [
+            Sub(RSP, Value(rsp_parameter_offset.to_string())),
+            NullReg(RAX),
+            Call(func.to_string()),
+        ];
 
         self.functions
             .get_mut(function)
