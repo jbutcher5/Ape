@@ -442,18 +442,21 @@ impl Generator {
         // Calculate required C calling convention stack offset
         // the stack must be aligned to a multiple of 16
 
-        let stack_offet =
-            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
+        let mut stack_offet = 0;
+        //next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
+
+        if node_types.len() > 6 {
+            for node in &node_types[6..] {
+                stack_offet += node.byte_size();
+            }
+        }
 
         if stack_offet > 0 {
-            self.stack.push(Stack::Empty(stack_offet));
             self.functions
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
                 .push(Sub(RSP, Value(stack_offet.to_string())));
         }
-
-        let mut rsp_parameter_offset = 0;
 
         for node in nodes[1..].into_iter().rev() {
             // Evaluate each parameter and push it onto the stack
@@ -468,8 +471,7 @@ impl Generator {
 
             // Update the virtual stack within the compiler
 
-            rsp_parameter_offset += t.byte_size() as i64;
-            parameter_address.push((address, t.byte_size() as i64));
+            parameter_address.push(address);
             self.stack.push(Stack::Allocation(t.byte_size()));
         }
 
@@ -481,12 +483,8 @@ impl Generator {
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(
                     REGSITERS64[i].clone(),
-                    parameter_address[parameter_address.len() - (i + 1)]
-                        .0
-                        .clone(),
+                    parameter_address[parameter_address.len() - (i + 1)].clone(),
                 ));
-
-            rsp_parameter_offset -= parameter_address[parameter_address.len() - (i + 1)].1;
         }
 
         // Pop all of the parameters off the stack
@@ -497,12 +495,14 @@ impl Generator {
                 .ok_or("Parameter address and scope stack out of sync".to_string())?;
         }
 
-        let call_func = [
-            Sub(RSP, Value(rsp_parameter_offset.to_string())),
-            NullReg(RAX),
-            Call(func.to_string()),
-            Add(RSP, Value(rsp_parameter_offset.to_string())),
-        ];
+        let mut call_func = vec![NullReg(RAX), Call(func.to_string())];
+
+        if let Some(Stack::Allocation(n)) = self.stack.last() {
+            call_func.push(Add(RSP, Value(n.to_string())));
+            self.stack
+                .pop()
+                .ok_or("Parameter address and scope stack out of sync".to_string())?;
+        }
 
         self.functions
             .get_mut(function)
@@ -643,7 +643,7 @@ impl Generator {
 
         buffer.extend(b"\nsection .data\n");
         for (i, v) in self.data.iter().enumerate() {
-            buffer.extend(format!("    s{}: db `{}`\n", i, v).as_bytes());
+            buffer.extend(format!("    s{}: db `{}`, 0\n", i, v).as_bytes());
         }
 
         buffer
