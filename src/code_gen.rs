@@ -150,7 +150,7 @@ fn func_param_stack_alloc(parameters: &Vec<Type>) -> u64 {
 #[derive(Debug, Clone)]
 pub struct Generator {
     stack: Vec<Stack>,
-    externs: HashMap<String, Vec<Type>>,
+    externs: Vec<String>,
     functions: HashMap<String, Vec<Instr>>,
     function_signatures: HashMap<String, FuncSignature>,
     data: Vec<String>,
@@ -168,14 +168,9 @@ impl Default for Generator {
             FuncSignature::new(vec![Void, Str], true),
         );
 
-        // TODO: Remove this code before push
-
-        let mut init_extern = HashMap::new();
-        init_extern.insert("printf".to_string(), vec![]);
-
         Self {
             stack: vec![],
-            externs: init_extern,
+            externs: vec![],
             functions: init_func,
             function_signatures: init_func_sig,
             data: vec![],
@@ -593,6 +588,50 @@ impl Generator {
                             Err("Define's can only assign to identifiers".to_string())
                         }
                     }
+
+                    "extern" => {
+                        if let Node::Ident(ident) = nodes
+                            .get(1)
+                            .ok_or("Extern expects 2 parameters".to_string())?
+                        {
+                            let mut buffer = vec![];
+
+                            for node in &nodes[2..] {
+                                if let Node::Ident(ident) = node {
+                                    buffer.push(ident);
+                                } else {
+                                    return Err("Externs parameters must be idents".to_string());
+                                }
+                            }
+
+                            let mut signature = FuncSignature {
+                                types: vec![],
+                                additional_arguments: false,
+                            };
+
+                            if let Some("...") = buffer.last().map(|x| x.as_str()) {
+                                buffer.pop();
+                                signature.additional_arguments = true;
+                            }
+
+                            for ident in buffer {
+                                println!("{}", &ident);
+                                signature
+                                    .types
+                                    .push(Type::try_from(ident.as_str()).unwrap());
+                            }
+
+                            self.externs.push(ident.to_string());
+
+                            self.function_signatures
+                                .insert(ident.to_string(), signature);
+
+                            Ok(Void)
+                        } else {
+                            Err("The first parameter of an extern must be an identifier"
+                                .to_string())
+                        }
+                    }
                     _ => self.handle_call(function, nodes),
                 },
                 _ => todo!(),
@@ -624,7 +663,7 @@ impl Generator {
 
         let mut buffer: Vec<u8> = include_bytes!("header.asm").to_vec();
 
-        for name in self.externs.keys() {
+        for name in self.externs.iter() {
             buffer.extend(format!("extern {name}\n").as_bytes());
         }
 
