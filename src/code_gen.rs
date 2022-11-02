@@ -366,21 +366,24 @@ impl Generator {
         let t = self.consume_node(function, node)?;
 
         let instructions = match t {
-            Int | Bool | Pointer(_) => vec![Mov(
-                Stack(-(self.scope_size() as i64), t.byte_size()),
-                Reg(match t.byte_size() {
-                    1 => AL,
-                    2 => AX,
-                    4 => EAX,
-                    8 => RAX,
-                    _ => {
-                        return Err(format!(
-                            "Unknown register for byte size `{}`",
-                            t.byte_size()
-                        ))
-                    }
-                }),
-            )],
+            Int | Bool | Pointer(_) => vec![
+                Mov(
+                    Stack(-(self.scope_size() as i64), t.byte_size()),
+                    Reg(match t.byte_size() {
+                        1 => AL,
+                        2 => AX,
+                        4 => EAX,
+                        8 => RAX,
+                        _ => {
+                            return Err(format!(
+                                "Unknown register for byte size `{}`",
+                                t.byte_size()
+                            ))
+                        }
+                    }),
+                ),
+                Sub(RSP, Value(t.byte_size().to_string())),
+            ],
             _ => todo!(),
         };
 
@@ -615,7 +618,6 @@ impl Generator {
                             }
 
                             for ident in buffer {
-                                println!("{}", &ident);
                                 signature
                                     .types
                                     .push(Type::try_from(ident.as_str()).unwrap());

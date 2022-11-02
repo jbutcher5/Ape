@@ -5,8 +5,8 @@ cargo run
 
 nasm out.asm -f elf64 -g
 
-clang out.o -no-pie -g
+clang out.o stdlib.c -no-pie -g
 ./a.out
 
-gcc out.o -no-pie -g
+gcc out.o stdlib.c -no-pie -g
 ./a.out
