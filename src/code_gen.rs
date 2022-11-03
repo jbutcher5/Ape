@@ -410,7 +410,7 @@ impl Generator {
         let func_signature = self
             .function_signatures
             .get(func)
-            .ok_or("Function `{func}` has no type signature".to_string())?
+            .ok_or(format!("Function `{func}` has no type signature"))?
             .clone();
 
         let mut node_types = vec![];
