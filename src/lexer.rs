@@ -4,12 +4,16 @@ use std::path::Path;
 pub enum Token {
     OpenBracket,
     CloseBracket,
+    OpenSquareBracket,
+    CloseSquareBracket,
     Octothorpe,
     Number(i64),
     Boolean(bool),
     String(String),
     Ident(String),
 }
+
+const SPECIAL_CHARS: [u8; 7] = [b'(', b')', b'[', b']', b'"', b' ', b'\n'];
 
 pub struct Lexer {
     source: Vec<u8>,
@@ -68,6 +72,15 @@ impl Lexer {
                     self.inc();
                     Token::CloseBracket
                 }
+                b'[' => {
+                    self.inc();
+                    Token::OpenSquareBracket
+                }
+                b']' => {
+                    self.inc();
+                    Token::CloseSquareBracket
+                }
+
                 b'#' => self.handle_octothorpe()?,
                 b'"' => self.handle_string()?,
                 b'0'..=b'9' => self.handle_number()?,
@@ -138,7 +151,7 @@ impl Lexer {
         let mut acc = vec![];
 
         while let Some(c) = self.curr() {
-            if c != b'(' && c != b')' && c != b'"' && c != b' ' && c != b'\n' {
+            if !SPECIAL_CHARS.contains(&c) {
                 acc.push(c);
                 self.inc();
             } else {
