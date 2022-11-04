@@ -25,6 +25,7 @@ pub enum Type {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Node {
     Literal(Literal),
+    TypedIdent(String, Type),
     Ident(String),
     Bracket(Vec<Node>),
 }
@@ -359,11 +360,21 @@ impl Generator {
         &mut self,
         function: &String,
         ident: String,
+        expected_type: Option<Type>,
         node: Node,
     ) -> Result<Type, String> {
         use Type::*;
 
         let t = self.consume_node(function, node)?;
+
+        if let Some(expected) = expected_type {
+            if t != expected {
+                return Err(format!(
+                    "Define expected a type of {:?} but got {:?}",
+                    expected, t
+                ));
+            }
+        }
 
         let instructions = match t {
             Int | Bool | Pointer(_) => vec![
@@ -392,6 +403,7 @@ impl Generator {
             .ok_or(format!("Unknown function called `{function}`"))?
             .extend(instructions);
         self.stack.push(Stack::Variable(ident, t));
+
         Ok(Void)
     }
 
@@ -519,6 +531,7 @@ impl Generator {
     fn node_type(&self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Literal(literal) => Ok(Type::from(literal)),
+            Node::TypedIdent(_, t) => Ok(t.clone()),
             Node::Ident(ident) => self
                 .get_variable(ident)
                 .ok_or(format!("Unkown identifier `{ident}`"))
@@ -557,7 +570,7 @@ impl Generator {
 
         match node {
             Node::Literal(literal) => self.move_literal(function, RAX, &literal),
-            Node::Ident(ident) => self.handle_ident(&ident, function),
+            Node::Ident(ident) | Node::TypedIdent(ident, _) => self.handle_ident(&ident, function),
             Node::Bracket(nodes) => match nodes.get(0).ok_or("Cannot have empty brackets")? {
                 Node::Ident(ident) => match ident.as_str() {
                     "ref" => match nodes.get(1).ok_or("ref must have 1 parameter")? {
@@ -575,21 +588,25 @@ impl Generator {
                     },
 
                     "define" => {
-                        if let Node::Ident(ident) = nodes
+                        let (ident, expected_type): (String, Option<Type>) = match nodes
                             .get(1)
                             .ok_or("Define expects 2 parameters".to_string())?
+                            .clone()
                         {
-                            self.handle_define(
-                                function,
-                                ident.to_string(),
-                                nodes
-                                    .get(2)
-                                    .ok_or("Define expects 2 parameters".to_string())?
-                                    .clone(),
-                            )
-                        } else {
-                            Err("Define's can only assign to identifiers".to_string())
-                        }
+                            Node::TypedIdent(ident, t) => (ident, Some(t)),
+                            Node::Ident(ident) => (ident, None),
+                            _ => return Err("Define's can only assign to identifiers".to_string()),
+                        };
+
+                        self.handle_define(
+                            function,
+                            ident,
+                            expected_type,
+                            nodes
+                                .get(2)
+                                .ok_or("Define expects 2 parameters".to_string())?
+                                .clone(),
+                        )
                     }
 
                     "extern" => {

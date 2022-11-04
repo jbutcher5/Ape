@@ -6,6 +6,7 @@ pub enum Token {
     CloseBracket,
     OpenSquareBracket,
     CloseSquareBracket,
+    Colon,
     Octothorpe,
     Number(i64),
     Boolean(bool),
@@ -13,7 +14,7 @@ pub enum Token {
     Ident(String),
 }
 
-const SPECIAL_CHARS: [u8; 7] = [b'(', b')', b'[', b']', b'"', b' ', b'\n'];
+const SPECIAL_CHARS: [u8; 8] = [b'(', b')', b'[', b']', b':', b'"', b' ', b'\n'];
 
 pub struct Lexer {
     source: Vec<u8>,
@@ -80,7 +81,10 @@ impl Lexer {
                     self.inc();
                     Token::CloseSquareBracket
                 }
-
+                b':' => {
+                    self.inc();
+                    Token::Colon
+                }
                 b'#' => self.handle_octothorpe()?,
                 b'"' => self.handle_string()?,
                 b'0'..=b'9' => self.handle_number()?,

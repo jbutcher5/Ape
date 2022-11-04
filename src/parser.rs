@@ -36,8 +36,7 @@ pub fn parse(mut tokens: Vec<Token>) -> Result<Vec<Node>, String> {
 
     while !tokens.is_empty() {
         let token = tokens.remove(0);
-
-        result.push(match token {
+        let new_node = match token {
             Token::OpenBracket => {
                 encapsulate(&mut tokens, Token::OpenBracket, Token::CloseBracket)?
             }
@@ -91,6 +90,22 @@ pub fn parse(mut tokens: Vec<Token>) -> Result<Vec<Node>, String> {
                     }
                 }
             }
+            Token::Colon => {
+                if let (Some(Node::Ident(ident)), Token::Ident(t)) =
+                    (result.pop(), tokens.remove(0))
+                {
+                    Node::TypedIdent(
+                        ident,
+                        Type::try_from(t.as_str())
+                            .map_err(|_| "Colon is not followed by a valid type".to_string())?,
+                    )
+                } else {
+                    return Err(
+                        "A colon must be preceded by an identifier and followed by a type"
+                            .to_string(),
+                    );
+                }
+            }
             Token::Ident(ident) => Node::Ident(ident),
             Token::Number(n) => Node::Literal(Literal::Int(n)),
             Token::String(str) => Node::Literal(Literal::Str(str)),
@@ -98,7 +113,8 @@ pub fn parse(mut tokens: Vec<Token>) -> Result<Vec<Node>, String> {
             Token::CloseBracket | Token::CloseSquareBracket => {
                 return Err("Out of place close brackets".to_string())
             }
-        });
+        };
+        result.push(new_node);
     }
 
     Ok(result)
