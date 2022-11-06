@@ -208,6 +208,20 @@ impl Generator {
         }
     }
 
+    fn deallocate_scope(&mut self) -> Box<[Instr; 3]> {
+        let mut acc: u64 = 0;
+
+        while let Some(stack_item) = self.stack.pop() {
+            if stack_item != Stack::BasePointer {
+                acc += stack_item.byte_size();
+            } else {
+                break;
+            }
+        }
+
+        Box::new([Add(RSP, Value(acc.to_string())), Pop(RBP), Return])
+    }
+
     fn get_string(&mut self, string: String) -> usize {
         if let Some(i) = self.data.iter().position(|x| x == &string) {
             i
@@ -452,8 +466,8 @@ impl Generator {
         // Calculate required C calling convention stack offset
         // the stack must be aligned to a multiple of 16
 
-        let mut stack_offet = 0;
-        //next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
+        let mut stack_offet =
+            next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
 
         if node_types.len() > 6 {
             for node in &node_types[6..] {
@@ -565,9 +579,6 @@ impl Generator {
     }
 
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
-        let _reference: Node = Node::Ident("ref".to_string());
-        let _define: Node = Node::Ident("define".to_string());
-
         match node {
             Node::Literal(literal) => self.move_literal(function, RAX, &literal),
             Node::Ident(ident) | Node::TypedIdent(ident, _) => self.handle_ident(&ident, function),
@@ -651,6 +662,85 @@ impl Generator {
                                 .to_string())
                         }
                     }
+
+                    "fn" => {
+                        if let Some(Node::Ident(fn_name)) = nodes.get(1) {
+                            self.functions.insert(fn_name.to_string(), vec![]);
+                            let (mut signature_nodes, arguments) =
+                                if let Some(Node::Bracket(nodes)) = nodes.get(2) {
+                                    nodes.into_iter().fold(
+                                        Ok((FuncSignature::new(vec![], false), vec![])),
+                                        |y, x| {
+                                            let mut acc = y?.clone();
+
+                                            let ident = if let Node::Ident(x) = x {
+                                                x
+                                            } else {
+                                                return Err(
+                                                    "Failed to parse function argument types"
+                                                        .to_string(),
+                                                );
+                                            };
+
+                                            if let Ok(x) = Type::try_from(ident.as_str()) {
+                                                acc.0.types.push(x.clone());
+                                                acc.1.push((ident, x));
+                                                Ok(acc)
+                                            } else {
+                                                if ident.as_str() == "..." {
+                                                    acc.0.additional_arguments = true;
+                                                    Ok(acc)
+                                                } else {
+                                                    Err("Could not parse type".to_string())
+                                                }
+                                            }
+                                        },
+                                    )?
+                                } else {
+                                    return Err("Missing function parameter".to_string());
+                                };
+
+                            signature_nodes.types.insert(
+                                0,
+                                if let Some(Node::Ident(ident)) = nodes.get(3) {
+                                    Type::try_from(ident.as_str())
+                                        .map_err(|_| "Could parse type".to_string())?
+                                } else {
+                                    return Err("Return type must be an Type".to_string());
+                                },
+                            );
+
+                            self.function_signatures
+                                .insert(fn_name.to_string(), signature_nodes);
+
+                            self.stack.push(Stack::BasePointer);
+
+                            for (ident, t) in arguments.into_iter() {
+                                self.stack.push(Stack::Variable(ident.to_string(), t))
+                            }
+
+                            self.functions
+                                .get_mut(fn_name)
+                                .unwrap()
+                                .extend([Push(Reg(RBP)), Mov(RBP, Reg(RSP))]);
+
+                            for node in nodes[4..].iter().cloned() {
+                                self.consume_node(fn_name, node)?;
+                            }
+
+                            let dealloc_instr = self.deallocate_scope();
+
+                            self.functions
+                                .get_mut(fn_name)
+                                .unwrap()
+                                .extend(*dealloc_instr);
+
+                            Ok(Void)
+                        } else {
+                            Err("No function name provided to fn".to_string())
+                        }
+                    }
+
                     _ => self.handle_call(function, nodes),
                 },
                 _ => todo!(),
@@ -686,17 +776,11 @@ impl Generator {
             buffer.extend(format!("extern {name}\n").as_bytes());
         }
 
+        let main_instrs = self.functions.remove("main").unwrap();
+        buffer.extend(export_function("main", &main_instrs));
+
         for (key, value) in &self.functions {
-            buffer.extend(format!("\n{}:\n", key).as_bytes());
-            for instr in value {
-                buffer.extend(
-                    match instr {
-                        DefineLabel(_) => format!("{}\n", instr.to_string()),
-                        _ => format!("    {}\n", instr.to_string()),
-                    }
-                    .as_bytes(),
-                )
-            }
+            buffer.extend(export_function(key, value));
         }
 
         buffer.extend(b"\nsection .data\n");
@@ -706,4 +790,21 @@ impl Generator {
 
         buffer
     }
+}
+
+fn export_function(fn_name: &str, instrs: &[Instr]) -> Vec<u8> {
+    let mut buffer = vec![];
+
+    buffer.extend(format!("\n{}:\n", fn_name).as_bytes());
+    for instr in instrs {
+        buffer.extend(
+            match instr {
+                DefineLabel(_) => format!("{}\n", instr.to_string()),
+                _ => format!("    {}\n", instr.to_string()),
+            }
+            .as_bytes(),
+        )
+    }
+
+    buffer
 }

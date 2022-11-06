@@ -1,5 +1,6 @@
 (extern printf Void Str ...)
-(extern add Int Int Int)
 
-(define x : Int 5)
-(printf "%d\n" (add x 5))
+(fn say_hello [] Void
+    (printf "Hello World\n"))
+
+(say_hello)
