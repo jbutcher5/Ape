@@ -1,6 +1,7 @@
 (extern printf Void Str ...)
 
-(fn say_hello [] Void
-    (printf "Hello World\n"))
-
-(say_hello)
+(fn main [] Void
+    (printf "Hello, World!\n")
+    (define x 123)
+    (printf "My number is %d\n" x)
+    )

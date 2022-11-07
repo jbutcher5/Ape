@@ -466,20 +466,22 @@ impl Generator {
         // Calculate required C calling convention stack offset
         // the stack must be aligned to a multiple of 16
 
-        let mut stack_offet =
+        let mut stack_offset =
             next_aligned_stack(self.scope_size() + func_param_stack_alloc(&node_types) + 8);
 
         if node_types.len() > 6 {
             for node in &node_types[6..] {
-                stack_offet += node.byte_size();
+                stack_offset += node.byte_size();
             }
         }
 
-        if stack_offet > 0 {
+        if stack_offset > 0 {
             self.functions
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
-                .push(Sub(RSP, Value(stack_offet.to_string())));
+                .push(Sub(RSP, Value(stack_offset.to_string())));
+
+            self.stack.push(Stack::Empty(stack_offset));
         }
 
         for node in nodes[1..].into_iter().rev() {
