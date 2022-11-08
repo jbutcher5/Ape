@@ -217,7 +217,7 @@ use {Instr::*, Operand::*, Register::*};
 pub fn next_aligned_stack(bytes: u64) -> u64 {
     match bytes {
         0 => 16,
-        start => (start as f64 / 16.0).ceil() as u64 * 16,
+        start => (start as f64 / 16.0).ceil() as u64 * 16 - bytes,
     }
 }
 
