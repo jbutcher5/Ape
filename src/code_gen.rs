@@ -160,7 +160,7 @@ pub struct Generator {
 impl Default for Generator {
     fn default() -> Self {
         let mut init_func = HashMap::new();
-        init_func.insert("main".to_string(), vec![Mov(RBP, Reg(RSP))]);
+        init_func.insert("main".to_string(), vec![Push(Reg(RSP)), Mov(RBP, Reg(RSP))]);
 
         let mut init_func_sig = HashMap::new();
         init_func_sig.insert("main".to_string(), FuncSignature::new(vec![Void], false));
@@ -234,7 +234,7 @@ impl Generator {
     fn get_variable(&self, ident: &String) -> Option<(Register, Type)> {
         let mut acc: i64 = 0;
 
-        for x in &self.stack[self.base_pointer()?..] {
+        for x in &self.stack[self.base_pointer()? + 1..] {
             if let Stack::Variable(name, t) = x {
                 if ident == name {
                     return Some((Stack(acc, t.byte_size()), t.clone()));
@@ -758,20 +758,7 @@ impl Generator {
         Ok(())
     }
 
-    fn write_exit(&mut self) {
-        self.functions
-            .get_mut(&"main".to_string())
-            .unwrap()
-            .extend(vec![
-                Mov(RAX, Value(60.to_string())),
-                Mov(RDI, Value(0.to_string())),
-                Syscall,
-            ]);
-    }
-
     pub fn export(&mut self) -> Vec<u8> {
-        self.write_exit();
-
         let mut buffer: Vec<u8> = include_bytes!("header.asm").to_vec();
 
         for name in self.externs.iter() {

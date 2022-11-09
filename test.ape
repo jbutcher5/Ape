@@ -1,7 +1,9 @@
 (extern printf Void Str ...)
+(extern exit Void Int)
 
 (fn main [] Void
     (printf "Hello, World!\n")
     (define x 123)
     (printf "My number is %d\n" x)
+    (exit 0)
     )
