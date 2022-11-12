@@ -1,9 +1,9 @@
 (extern printf Void Str ...)
 (extern exit Void Int)
+(extern deref Int &Int)
+(extern element Int &Int Int)
 
 (fn main [] Void
-    (printf "Hello, World!\n")
-    (define x 123)
-    (printf "My number is %d\n" x)
-    (exit 0)
-    )
+    (define x #(1 123 2))
+    (printf "%d\n" (element x 0))
+    (exit 0))
