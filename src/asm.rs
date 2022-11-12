@@ -240,9 +240,10 @@ pub fn push_reg(r: Register, stack_size: u64) -> Vec<Instr> {
 
 #[inline]
 pub fn mov_reg(to: Register, from: Register) -> Instr {
-    match (to.byte_size(), from.byte_size()) {
-        (8, 1) => Movzx(to, from),
-        _ => Mov(to, Reg(from)),
+    if to.byte_size() > from.byte_size() {
+        Movzx(to, from)
+    } else {
+        Mov(to, Reg(from))
     }
 }
 
