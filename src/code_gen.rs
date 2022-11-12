@@ -113,7 +113,7 @@ impl ByteSize for Type {
     fn byte_size(&self) -> u64 {
         match self {
             Void => 0,
-            Int => 8,
+            Int => 4,
             Bool => 1,
             Str => 8,
             Array(length, t) => (*length as u64) * t.byte_size(),
@@ -288,8 +288,7 @@ impl Generator {
                 let mut bp_offset = self.scope_size();
                 let mut t: Option<Type> = array_type.clone();
 
-                let first = bp_offset;
-                for node in array {
+                for node in array.into_iter().rev() {
                     let node_type = self.consume_node(function, node.clone())?;
 
                     if t.as_ref().is_none() {
@@ -314,7 +313,13 @@ impl Generator {
                                 -(bp_offset as i64),
                                 t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
                             ),
-                            RAX,
+                            match t.as_ref().ok_or("Array has an unknown type")?.byte_size() {
+                                1 => AL,
+                                2 => AX,
+                                4 => EAX,
+                                8 => RAX,
+                                n => return Err(format!("Unknown register for byte size `{}`", n)),
+                            },
                         ));
 
                     bp_offset += t.as_ref().ok_or("Array has an unknown type")?.byte_size();
@@ -326,7 +331,9 @@ impl Generator {
                     .push(Lea(
                         RAX,
                         Stack(
-                            first as i64,
+                            -((bp_offset
+                                - t.as_ref().ok_or("Array has an unknown type")?.byte_size())
+                                as i64),
                             t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
                         ),
                     ));
@@ -344,7 +351,7 @@ impl Generator {
             .ok_or(format!("Unkown identifier `{ident}`"))?;
 
         let instructions = match t {
-            Int | Bool => mov_reg(
+            Int | Bool | Pointer(_) => mov_reg(
                 match t.byte_size() {
                     1 => AL,
                     2 => AX,
@@ -423,6 +430,9 @@ impl Generator {
 
     fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
         const REGSITERS64: [Register; 6] = [RDI, RSI, RDX, RCX, R(8), R(9)];
+        const REGSITERS32: [Register; 6] = [EDI, ESI, EDX, ECX, RD(8), RD(9)];
+        const REGSITERS16: [Register; 6] = [DI, SI, DX, CX, RW(8), RW(9)];
+        const REGSITERS8: [Register; 6] = [DIL, SIL, DL, CL, RB(8), RB(9)];
 
         // Get function infomation
 
@@ -493,23 +503,44 @@ impl Generator {
             self.functions
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
-                .push(mov_reg(address.clone(), RAX));
+                .push(mov_reg(
+                    address.clone(),
+                    match t.byte_size() {
+                        1 => AL,
+                        2 => AX,
+                        4 => EAX,
+                        8 => RAX,
+                        _ => {
+                            return Err(format!(
+                                "Unknown register for byte size `{}`",
+                                t.byte_size()
+                            ))
+                        }
+                    },
+                ));
 
             // Update the virtual stack within the compiler
 
-            parameter_address.push(address);
+            parameter_address.push((address, t.byte_size()));
             self.stack.push(Stack::Allocation(t.byte_size()));
         }
 
         // Move the first six parameters off the stack and into registers
 
         for i in 0..parameter_address.len().min(6) {
+            let (address, byte_size) = parameter_address[parameter_address.len() - (i + 1)].clone();
+
             self.functions
                 .get_mut(function)
                 .ok_or("Unknown function called `{function}`")?
                 .push(mov_reg(
-                    REGSITERS64[i].clone(),
-                    parameter_address[parameter_address.len() - (i + 1)].clone(),
+                    match byte_size {
+                        1 => REGSITERS8[i].clone(),
+                        2 => REGSITERS16[i].clone(),
+                        4 => REGSITERS32[i].clone(),
+                        _ => REGSITERS64[i].clone(),
+                    },
+                    address,
                 ));
         }
 
