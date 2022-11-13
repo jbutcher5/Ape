@@ -5,5 +5,5 @@
 
 (fn main [] Void
     (define x #(1 123 2))
-    (printf "%d\n" (element x 0))
+    (printf "%d %d %d\n" (element x 0) (element x 1) (element x 2))
     (exit 0))
