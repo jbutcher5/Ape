@@ -287,6 +287,7 @@ impl Generator {
             Array(array, array_type) => {
                 let mut bp_offset = self.scope_size();
                 let mut t: Option<Type> = array_type.clone();
+                let first = bp_offset;
 
                 for node in array.into_iter().rev() {
                     let node_type = self.consume_node(function, node.clone())?;
@@ -328,15 +329,18 @@ impl Generator {
                 self.functions
                     .get_mut(function)
                     .ok_or(format!("Unknown function called `{function}`"))?
-                    .push(Lea(
-                        RAX,
-                        Stack(
-                            -((bp_offset
-                                - t.as_ref().ok_or("Array has an unknown type")?.byte_size())
-                                as i64),
-                            t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
+                    .extend([
+                        Sub(RSP, Value((bp_offset - first).to_string())),
+                        Lea(
+                            RAX,
+                            Stack(
+                                -((bp_offset
+                                    - t.as_ref().ok_or("Array has an unknown type")?.byte_size())
+                                    as i64),
+                                t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
+                            ),
                         ),
-                    ));
+                    ]);
 
                 Ok(Type::Pointer(Box::new(
                     t.ok_or("Array has an unknown type")?.clone(),
