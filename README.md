@@ -24,8 +24,9 @@ Most of our world runs on / exposes a C API, Ape aims to be a lisp with the func
 * [x] Pointers
 * [x] Array literals
 * [ ] Ape funcions
-* [ ] Type casting
 * [ ] Macros
+* [ ] Lambdas
+* [ ] Type casting
 * [ ] Enums, Records
 * [ ] Hashmap, Cons List
 * [ ] **Bootstrap**
