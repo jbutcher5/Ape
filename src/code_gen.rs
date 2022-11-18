@@ -4,6 +4,11 @@ use asm::{Instr::*, Operand::*, Register::*, *};
 use std::collections::HashMap;
 use Type::*;
 
+const REGSITERS64: [Register; 6] = [RDI, RSI, RDX, RCX, R(8), R(9)];
+const REGSITERS32: [Register; 6] = [EDI, ESI, EDX, ECX, RD(8), RD(9)];
+const REGSITERS16: [Register; 6] = [DI, SI, DX, CX, RW(8), RW(9)];
+const REGSITERS8: [Register; 6] = [DIL, SIL, DL, CL, RB(8), RB(9)];
+
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum Literal {
     Int(i64),
@@ -433,11 +438,6 @@ impl Generator {
     }
 
     fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
-        const REGSITERS64: [Register; 6] = [RDI, RSI, RDX, RCX, R(8), R(9)];
-        const REGSITERS32: [Register; 6] = [EDI, ESI, EDX, ECX, RD(8), RD(9)];
-        const REGSITERS16: [Register; 6] = [DI, SI, DX, CX, RW(8), RW(9)];
-        const REGSITERS8: [Register; 6] = [DIL, SIL, DL, CL, RB(8), RB(9)];
-
         // Get function infomation
 
         let mut parameter_address = vec![];
@@ -710,27 +710,19 @@ impl Generator {
                                         |y, x| {
                                             let mut acc = y?.clone();
 
-                                            let ident = if let Node::Ident(x) = x {
-                                                x
-                                            } else {
-                                                return Err(
-                                                    "Failed to parse function argument types"
-                                                        .to_string(),
-                                                );
-                                            };
-
-                                            if let Ok(x) = Type::try_from(ident.as_str()) {
-                                                acc.0.types.push(x.clone());
-                                                acc.1.push((ident, x));
-                                                Ok(acc)
-                                            } else {
-                                                if ident.as_str() == "..." {
-                                                    acc.0.additional_arguments = true;
-                                                    Ok(acc)
+                                            let (ident, t) =
+                                                if let Node::TypedIdent(ident, t) = x.clone() {
+                                                    (ident, t)
                                                 } else {
-                                                    Err("Could not parse type".to_string())
-                                                }
-                                            }
+                                                    return Err(
+                                                        "Failed to parse function argument types"
+                                                            .to_string(),
+                                                    );
+                                                };
+
+                                            acc.0.types.push(t.clone());
+                                            acc.1.push((ident, t));
+                                            Ok(acc)
                                         },
                                     )?
                                 } else {

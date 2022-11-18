@@ -2,8 +2,12 @@
 (extern exit Void Int)
 (extern deref Int &Int)
 (extern element Int &Int Int)
+(extern add Int Int Int)
+
+(fn f [x: Int y: Int] Int
+    (add x y))
 
 (fn main [] Void
     (define x #(1 123 2))
-    (printf "%d %d %d\n" (element x 0) (element x 1) (element x 2))
+    (printf "%d %d %d\n" (f (element x 0) (element x 1)) (element x 1) (element x 2))
     (exit 0))
