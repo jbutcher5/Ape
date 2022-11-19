@@ -198,6 +198,27 @@ impl Generator {
         acc
     }
 
+    fn extend_fn<T>(&mut self, function: &String, iter: T) -> Result<(), String>
+    where
+        T: IntoIterator<Item = Instr>,
+    {
+        self.functions
+            .get_mut(function)
+            .ok_or("Unknown function called `{function}`")?
+            .extend(iter);
+
+        Ok(())
+    }
+
+    fn push_fn(&mut self, function: &String, item: Instr) -> Result<(), String> {
+        self.functions
+            .get_mut(function)
+            .ok_or("Unknown function called `{function}`")?
+            .push(item);
+
+        Ok(())
+    }
+
     fn base_pointer(&self) -> Option<usize> {
         if self.stack.is_empty() {
             Some(
@@ -264,29 +285,16 @@ impl Generator {
 
         match literal {
             Int(x) => {
-                self.functions
-                    .get_mut(function)
-                    .ok_or(format!("Unknown function called `{function}`"))?
-                    .push(Mov(register, Value(x.to_string())));
-
+                self.push_fn(function, Mov(register, Value(x.to_string())))?;
                 Ok(Type::from(literal))
             }
             Bool(x) => {
-                self.functions
-                    .get_mut(function)
-                    .ok_or(format!("Unknown function called `{function}`"))?
-                    .push(Mov(register, Value((*x as i32).to_string())));
-
+                self.push_fn(function, Mov(register, Value((*x as i32).to_string())))?;
                 Ok(Type::from(literal))
             }
             Str(string) => {
                 let index = self.get_string(string.clone());
-
-                self.functions
-                    .get_mut(function)
-                    .ok_or(format!("Unknown function called `{function}`"))?
-                    .push(Mov(register, Reg(Data(index))));
-
+                self.push_fn(function, Mov(register, Reg(Data(index))))?;
                 Ok(Type::from(literal))
             }
             Array(array, array_type) => {
@@ -311,10 +319,9 @@ impl Generator {
                         ));
                     }
 
-                    self.functions
-                        .get_mut(function)
-                        .ok_or(format!("Unknown function called `{function}`"))?
-                        .push(mov_reg(
+                    self.push_fn(
+                        function,
+                        mov_reg(
                             Stack(
                                 -(bp_offset as i64),
                                 t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
@@ -326,15 +333,15 @@ impl Generator {
                                 8 => RAX,
                                 n => return Err(format!("Unknown register for byte size `{}`", n)),
                             },
-                        ));
+                        ),
+                    )?;
 
                     bp_offset += t.as_ref().ok_or("Array has an unknown type")?.byte_size();
                 }
 
-                self.functions
-                    .get_mut(function)
-                    .ok_or(format!("Unknown function called `{function}`"))?
-                    .extend([
+                self.extend_fn(
+                    function,
+                    [
                         Sub(RSP, Value((bp_offset - first).to_string())),
                         Lea(
                             RAX,
@@ -345,7 +352,8 @@ impl Generator {
                                 t.as_ref().ok_or("Array has an unknown type")?.byte_size(),
                             ),
                         ),
-                    ]);
+                    ],
+                )?;
 
                 Ok(Type::Pointer(Box::new(
                     t.ok_or("Array has an unknown type")?.clone(),
@@ -378,11 +386,7 @@ impl Generator {
             _ => todo!(),
         };
 
-        self.functions
-            .get_mut(function)
-            .ok_or(format!("Unknown function called `{function}`"))?
-            .push(instructions);
-
+        self.push_fn(function, instructions)?;
         Ok(t) // TODO: If t is an array this should become a pointer
     }
 
@@ -428,10 +432,7 @@ impl Generator {
             _ => todo!(),
         };
 
-        self.functions
-            .get_mut(function)
-            .ok_or(format!("Unknown function called `{function}`"))?
-            .extend(instructions);
+        self.extend_fn(function, instructions)?;
         self.stack.push(Stack::Variable(ident, t));
 
         Ok(Void)
@@ -490,11 +491,7 @@ impl Generator {
         }
 
         if stack_offset > 0 {
-            self.functions
-                .get_mut(function)
-                .ok_or("Unknown function called `{function}`")?
-                .push(Sub(RSP, Value(stack_offset.to_string())));
-
+            self.push_fn(function, Sub(RSP, Value(stack_offset.to_string())))?;
             self.stack.push(Stack::Empty(stack_offset));
         }
 
@@ -504,10 +501,9 @@ impl Generator {
             let t = self.consume_node(function, node.clone())?;
             let address = Stack(-(self.scope_size() as i64), t.byte_size());
 
-            self.functions
-                .get_mut(function)
-                .ok_or("Unknown function called `{function}`")?
-                .push(mov_reg(
+            self.push_fn(
+                function,
+                mov_reg(
                     address.clone(),
                     match t.byte_size() {
                         1 => AL,
@@ -521,7 +517,8 @@ impl Generator {
                             ))
                         }
                     },
-                ));
+                ),
+            )?;
 
             // Update the virtual stack within the compiler
 
@@ -533,11 +530,9 @@ impl Generator {
 
         for i in 0..parameter_address.len().min(6) {
             let (address, byte_size) = parameter_address[parameter_address.len() - (i + 1)].clone();
-
-            self.functions
-                .get_mut(function)
-                .ok_or("Unknown function called `{function}`")?
-                .push(mov_reg(
+            self.push_fn(
+                function,
+                mov_reg(
                     match byte_size {
                         1 => REGSITERS8[i].clone(),
                         2 => REGSITERS16[i].clone(),
@@ -545,7 +540,8 @@ impl Generator {
                         _ => REGSITERS64[i].clone(),
                     },
                     address,
-                ));
+                ),
+            )?;
         }
 
         // Pop all of the parameters off the stack
@@ -565,10 +561,7 @@ impl Generator {
                 .ok_or("Parameter address and scope stack out of sync".to_string())?;
         }
 
-        self.functions
-            .get_mut(function)
-            .ok_or("Unknown function called `{function}`")?
-            .extend(call_func);
+        self.extend_fn(function, call_func)?;
 
         self.function_signatures
             .get(func)
@@ -748,21 +741,14 @@ impl Generator {
                                 self.stack.push(Stack::Variable(ident.to_string(), t))
                             }
 
-                            self.functions
-                                .get_mut(fn_name)
-                                .unwrap()
-                                .extend([Push(Reg(RBP)), Mov(RBP, Reg(RSP))]);
+                            self.extend_fn(function, [Push(Reg(RBP)), Mov(RBP, Reg(RSP))])?;
 
                             for node in nodes[4..].iter().cloned() {
                                 self.consume_node(fn_name, node)?;
                             }
 
                             let dealloc_instr = self.deallocate_scope();
-
-                            self.functions
-                                .get_mut(fn_name)
-                                .unwrap()
-                                .extend(*dealloc_instr);
+                            self.extend_fn(function, *dealloc_instr)?;
 
                             Ok(Void)
                         } else {
