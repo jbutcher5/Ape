@@ -737,9 +737,39 @@ impl Generator {
 
                             self.stack.push(Stack::BasePointer);
 
-                            for (ident, t) in arguments.into_iter() {
-                                self.stack.push(Stack::Variable(ident.to_string(), t))
+                            let mut var_buffer: Vec<Stack> = vec![];
+                            let mut arg_stack_size: u64 = arguments
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (_, t))| t.byte_size() * (i > 6) as u64)
+                                .sum();
+
+                            for (i, (ident, t)) in arguments.into_iter().enumerate().rev() {
+                                self.push_fn(
+                                    function,
+                                    Mov(
+                                        Stack(
+                                            -((self.scope_size() + arg_stack_size) as i64),
+                                            t.byte_size(),
+                                        ),
+                                        if i > 6 {
+                                            arg_stack_size -= t.byte_size();
+                                            Reg(Stack(arg_stack_size as i64, t.byte_size()))
+                                        } else {
+                                            Reg(match t.byte_size() {
+                                                8 => REGSITERS64[i].clone(),
+                                                4 => REGSITERS32[i].clone(),
+                                                2 => REGSITERS16[i].clone(),
+                                                _ => REGSITERS8[i].clone(),
+                                            })
+                                        },
+                                    ),
+                                )?;
+
+                                var_buffer.insert(0, Stack::Variable(ident.to_string(), t));
                             }
+
+                            self.stack.extend(var_buffer);
 
                             self.extend_fn(function, [Push(Reg(RBP)), Mov(RBP, Reg(RSP))])?;
 
