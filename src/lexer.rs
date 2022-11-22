@@ -41,7 +41,7 @@ impl Lexer {
     }
 
     fn curr(&self) -> Option<u8> {
-        self.source.get(self.index).map(|x| *x)
+        self.source.get(self.index).copied()
     }
 
     fn inc(&mut self) {

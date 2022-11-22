@@ -149,7 +149,7 @@ fn func_param_stack_alloc(parameters: &Vec<Type>) -> u64 {
         0
     } else {
         let stack_params = &parameters[7..];
-        stack_params.into_iter().map(Type::byte_size).sum()
+        stack_params.iter().map(Type::byte_size).sum()
     }
 }
 
@@ -302,7 +302,7 @@ impl Generator {
                 let mut t: Option<Type> = array_type.clone();
                 let first = bp_offset;
 
-                for node in array.into_iter().rev() {
+                for node in array.iter().rev() {
                     let node_type = self.consume_node(function, node.clone())?;
 
                     if t.as_ref().is_none() {
@@ -356,7 +356,7 @@ impl Generator {
                 )?;
 
                 Ok(Type::Pointer(Box::new(
-                    t.ok_or("Array has an unknown type")?.clone(),
+                    t.ok_or("Array has an unknown type")?,
                 )))
             }
         }
@@ -495,7 +495,7 @@ impl Generator {
             self.stack.push(Stack::Empty(stack_offset));
         }
 
-        for node in nodes[1..].into_iter().rev() {
+        for node in nodes[1..].iter().rev() {
             // Evaluate each parameter and push it onto the stack
 
             let t = self.consume_node(function, node.clone())?;
@@ -567,8 +567,7 @@ impl Generator {
             .get(func)
             .ok_or("No function called `{func}`".to_string())?
             .types
-            .get(0)
-            .map(|x| x.clone())
+            .get(0).cloned()
             .ok_or("Function `{func}` has no return type".to_string())
     }
 
@@ -615,7 +614,7 @@ impl Generator {
             Node::Bracket(nodes) => match nodes.get(0).ok_or("Cannot have empty brackets")? {
                 Node::Ident(ident) => match ident.as_str() {
                     "ref" => match nodes.get(1).ok_or("ref must have 1 parameter")? {
-                        Node::Ident(ident) => match self.get_variable(&ident) {
+                        Node::Ident(ident) => match self.get_variable(ident) {
                             Some((address, t)) => {
                                 self.functions
                                     .get_mut(function)
@@ -698,10 +697,10 @@ impl Generator {
                             self.functions.insert(fn_name.to_string(), vec![]);
                             let (mut signature_nodes, arguments) =
                                 if let Some(Node::Bracket(nodes)) = nodes.get(2) {
-                                    nodes.into_iter().fold(
+                                    nodes.iter().fold(
                                         Ok((FuncSignature::new(vec![], false), vec![])),
                                         |y, x| {
-                                            let mut acc = y?.clone();
+                                            let mut acc = y?;
 
                                             let (ident, t) =
                                                 if let Node::TypedIdent(ident, t) = x.clone() {
