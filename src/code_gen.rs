@@ -567,7 +567,8 @@ impl Generator {
             .get(func)
             .ok_or("No function called `{func}`".to_string())?
             .types
-            .get(0).cloned()
+            .get(0)
+            .cloned()
             .ok_or("Function `{func}` has no return type".to_string())
     }
 
@@ -607,26 +608,160 @@ impl Generator {
         }
     }
 
+    fn handle_ref(&mut self, function: &String, node: &Node) -> Result<Type, String> {
+        match node {
+            Node::Ident(ident) => match self.get_variable(ident) {
+                Some((address, t)) => {
+                    self.functions
+                        .get_mut(function)
+                        .ok_or(format!("Unknown function called `{function}`"))?
+                        .push(Lea(RAX, address));
+                    Ok(Type::Pointer(Box::new(t)))
+                }
+                None => Err(format!("Unkown identifier `{ident}`")),
+            },
+            _ => Err("Can only take the reference of an identifier".to_string()),
+        }
+    }
+
+    fn handle_extern(&mut self, nodes: Vec<Node>) -> Result<Type, String> {
+        if let Node::Ident(ident) = nodes
+            .get(1)
+            .ok_or("Extern expects 2 parameters".to_string())?
+        {
+            let mut buffer = vec![];
+
+            for node in &nodes[2..] {
+                if let Node::Ident(ident) = node {
+                    buffer.push(ident);
+                } else {
+                    return Err("Externs parameters must be idents".to_string());
+                }
+            }
+
+            let mut signature = FuncSignature {
+                types: vec![],
+                additional_arguments: false,
+            };
+
+            if let Some("...") = buffer.last().map(|x| x.as_str()) {
+                buffer.pop();
+                signature.additional_arguments = true;
+            }
+
+            for ident in buffer {
+                signature
+                    .types
+                    .push(Type::try_from(ident.as_str()).unwrap());
+            }
+
+            self.externs.push(ident.to_string());
+
+            self.function_signatures
+                .insert(ident.to_string(), signature);
+
+            Ok(Void)
+        } else {
+            Err("The first parameter of an extern must be an identifier".to_string())
+        }
+    }
+
+    fn handle_function(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
+        if let Some(Node::Ident(fn_name)) = nodes.get(1) {
+            self.functions.insert(fn_name.to_string(), vec![]);
+            let (mut signature_nodes, arguments) = if let Some(Node::Bracket(nodes)) = nodes.get(2)
+            {
+                nodes
+                    .iter()
+                    .fold(Ok((FuncSignature::new(vec![], false), vec![])), |y, x| {
+                        let mut acc = y?;
+
+                        let (ident, t) = if let Node::TypedIdent(ident, t) = x.clone() {
+                            (ident, t)
+                        } else {
+                            return Err("Failed to parse function argument types".to_string());
+                        };
+
+                        acc.0.types.push(t.clone());
+                        acc.1.push((ident, t));
+                        Ok(acc)
+                    })?
+            } else {
+                return Err("Missing function parameter".to_string());
+            };
+
+            signature_nodes.types.insert(
+                0,
+                if let Some(Node::Ident(ident)) = nodes.get(3) {
+                    Type::try_from(ident.as_str()).map_err(|_| "Could parse type".to_string())?
+                } else {
+                    return Err("Return type must be an Type".to_string());
+                },
+            );
+
+            self.function_signatures
+                .insert(fn_name.to_string(), signature_nodes);
+
+            self.stack.push(Stack::BasePointer);
+
+            let mut var_buffer: Vec<Stack> = vec![];
+            let mut arg_stack_size: u64 = arguments
+                .iter()
+                .enumerate()
+                .map(|(i, (_, t))| t.byte_size() * (i > 6) as u64)
+                .sum();
+
+            for (i, (ident, t)) in arguments.into_iter().enumerate().rev() {
+                self.push_fn(
+                    function,
+                    Mov(
+                        Stack(
+                            -((self.scope_size() + arg_stack_size) as i64),
+                            t.byte_size(),
+                        ),
+                        if i > 6 {
+                            arg_stack_size -= t.byte_size();
+                            Reg(Stack(arg_stack_size as i64, t.byte_size()))
+                        } else {
+                            Reg(match t.byte_size() {
+                                8 => REGSITERS64[i].clone(),
+                                4 => REGSITERS32[i].clone(),
+                                2 => REGSITERS16[i].clone(),
+                                _ => REGSITERS8[i].clone(),
+                            })
+                        },
+                    ),
+                )?;
+
+                var_buffer.insert(0, Stack::Variable(ident.to_string(), t));
+            }
+
+            self.stack.extend(var_buffer);
+
+            self.extend_fn(function, [Push(Reg(RBP)), Mov(RBP, Reg(RSP))])?;
+
+            for node in nodes[4..].iter().cloned() {
+                self.consume_node(fn_name, node)?;
+            }
+
+            let dealloc_instr = self.deallocate_scope();
+            self.extend_fn(function, *dealloc_instr)?;
+
+            Ok(Void)
+        } else {
+            Err("No function name provided to fn".to_string())
+        }
+    }
+
     fn consume_node(&mut self, function: &String, node: Node) -> Result<Type, String> {
         match node {
             Node::Literal(literal) => self.move_literal(function, RAX, &literal),
             Node::Ident(ident) | Node::TypedIdent(ident, _) => self.handle_ident(&ident, function),
             Node::Bracket(nodes) => match nodes.get(0).ok_or("Cannot have empty brackets")? {
                 Node::Ident(ident) => match ident.as_str() {
-                    "ref" => match nodes.get(1).ok_or("ref must have 1 parameter")? {
-                        Node::Ident(ident) => match self.get_variable(ident) {
-                            Some((address, t)) => {
-                                self.functions
-                                    .get_mut(function)
-                                    .ok_or(format!("Unknown function called `{function}`"))?
-                                    .push(Lea(RAX, address));
-                                Ok(Type::Pointer(Box::new(t)))
-                            }
-                            None => Err(format!("Unkown identifier `{ident}`")),
-                        },
-                        _ => Err("Can only take the reference of an identifier".to_string()),
-                    },
-
+                    "ref" => {
+                        self.handle_ref(function, nodes.get(1).ok_or("ref must have 1 parameter")?)
+                    }
                     "define" => {
                         let (ident, expected_type): (String, Option<Type>) = match nodes
                             .get(1)
@@ -648,143 +783,8 @@ impl Generator {
                                 .clone(),
                         )
                     }
-
-                    "extern" => {
-                        if let Node::Ident(ident) = nodes
-                            .get(1)
-                            .ok_or("Extern expects 2 parameters".to_string())?
-                        {
-                            let mut buffer = vec![];
-
-                            for node in &nodes[2..] {
-                                if let Node::Ident(ident) = node {
-                                    buffer.push(ident);
-                                } else {
-                                    return Err("Externs parameters must be idents".to_string());
-                                }
-                            }
-
-                            let mut signature = FuncSignature {
-                                types: vec![],
-                                additional_arguments: false,
-                            };
-
-                            if let Some("...") = buffer.last().map(|x| x.as_str()) {
-                                buffer.pop();
-                                signature.additional_arguments = true;
-                            }
-
-                            for ident in buffer {
-                                signature
-                                    .types
-                                    .push(Type::try_from(ident.as_str()).unwrap());
-                            }
-
-                            self.externs.push(ident.to_string());
-
-                            self.function_signatures
-                                .insert(ident.to_string(), signature);
-
-                            Ok(Void)
-                        } else {
-                            Err("The first parameter of an extern must be an identifier"
-                                .to_string())
-                        }
-                    }
-
-                    "fn" => {
-                        if let Some(Node::Ident(fn_name)) = nodes.get(1) {
-                            self.functions.insert(fn_name.to_string(), vec![]);
-                            let (mut signature_nodes, arguments) =
-                                if let Some(Node::Bracket(nodes)) = nodes.get(2) {
-                                    nodes.iter().fold(
-                                        Ok((FuncSignature::new(vec![], false), vec![])),
-                                        |y, x| {
-                                            let mut acc = y?;
-
-                                            let (ident, t) =
-                                                if let Node::TypedIdent(ident, t) = x.clone() {
-                                                    (ident, t)
-                                                } else {
-                                                    return Err(
-                                                        "Failed to parse function argument types"
-                                                            .to_string(),
-                                                    );
-                                                };
-
-                                            acc.0.types.push(t.clone());
-                                            acc.1.push((ident, t));
-                                            Ok(acc)
-                                        },
-                                    )?
-                                } else {
-                                    return Err("Missing function parameter".to_string());
-                                };
-
-                            signature_nodes.types.insert(
-                                0,
-                                if let Some(Node::Ident(ident)) = nodes.get(3) {
-                                    Type::try_from(ident.as_str())
-                                        .map_err(|_| "Could parse type".to_string())?
-                                } else {
-                                    return Err("Return type must be an Type".to_string());
-                                },
-                            );
-
-                            self.function_signatures
-                                .insert(fn_name.to_string(), signature_nodes);
-
-                            self.stack.push(Stack::BasePointer);
-
-                            let mut var_buffer: Vec<Stack> = vec![];
-                            let mut arg_stack_size: u64 = arguments
-                                .iter()
-                                .enumerate()
-                                .map(|(i, (_, t))| t.byte_size() * (i > 6) as u64)
-                                .sum();
-
-                            for (i, (ident, t)) in arguments.into_iter().enumerate().rev() {
-                                self.push_fn(
-                                    function,
-                                    Mov(
-                                        Stack(
-                                            -((self.scope_size() + arg_stack_size) as i64),
-                                            t.byte_size(),
-                                        ),
-                                        if i > 6 {
-                                            arg_stack_size -= t.byte_size();
-                                            Reg(Stack(arg_stack_size as i64, t.byte_size()))
-                                        } else {
-                                            Reg(match t.byte_size() {
-                                                8 => REGSITERS64[i].clone(),
-                                                4 => REGSITERS32[i].clone(),
-                                                2 => REGSITERS16[i].clone(),
-                                                _ => REGSITERS8[i].clone(),
-                                            })
-                                        },
-                                    ),
-                                )?;
-
-                                var_buffer.insert(0, Stack::Variable(ident.to_string(), t));
-                            }
-
-                            self.stack.extend(var_buffer);
-
-                            self.extend_fn(function, [Push(Reg(RBP)), Mov(RBP, Reg(RSP))])?;
-
-                            for node in nodes[4..].iter().cloned() {
-                                self.consume_node(fn_name, node)?;
-                            }
-
-                            let dealloc_instr = self.deallocate_scope();
-                            self.extend_fn(function, *dealloc_instr)?;
-
-                            Ok(Void)
-                        } else {
-                            Err("No function name provided to fn".to_string())
-                        }
-                    }
-
+                    "extern" => self.handle_extern(nodes),
+                    "fn" => self.handle_function(function, nodes),
                     _ => self.handle_call(function, nodes),
                 },
                 _ => todo!(),
