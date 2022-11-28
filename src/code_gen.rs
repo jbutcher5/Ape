@@ -43,18 +43,30 @@ pub enum Stack {
     BasePointer,
 }
 
+#[derive(Debug, Clone)]
+pub struct Function {
+    signature: FuncSignature,
+    body: Vec<Instr>,
+}
+
+impl Function {
+    fn new(types: Vec<Type>, var_args: bool) -> Self {
+        Self {
+            signature: FuncSignature::new(types, var_args),
+            body: vec![],
+        }
+    }
+}
+
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct FuncSignature {
     types: Vec<Type>,
-    additional_arguments: bool,
+    var_args: bool,
 }
 
 impl FuncSignature {
-    fn new(types: Vec<Type>, additional_arguments: bool) -> Self {
-        Self {
-            types,
-            additional_arguments,
-        }
+    fn new(types: Vec<Type>, var_args: bool) -> Self {
+        Self { types, var_args }
     }
 }
 
@@ -157,28 +169,22 @@ fn func_param_stack_alloc(parameters: &Vec<Type>) -> u64 {
 pub struct Generator {
     stack: Vec<Stack>,
     externs: Vec<String>,
-    functions: HashMap<String, Vec<Instr>>,
-    function_signatures: HashMap<String, FuncSignature>,
+    functions: HashMap<String, Function>,
     data: Vec<String>,
 }
 
 impl Default for Generator {
     fn default() -> Self {
-        let mut init_func = HashMap::new();
-        init_func.insert("main".to_string(), vec![Push(Reg(RSP)), Mov(RBP, Reg(RSP))]);
+        let mut main = Function::new(vec![Void], false);
+        main.body = vec![Push(Reg(RSP)), Mov(RBP, Reg(RSP))];
 
-        let mut init_func_sig = HashMap::new();
-        init_func_sig.insert("main".to_string(), FuncSignature::new(vec![Void], false));
-        init_func_sig.insert(
-            "printf".to_string(),
-            FuncSignature::new(vec![Void, Str], true),
-        );
+        let mut init_func = HashMap::new();
+        init_func.insert("main".to_string(), main);
 
         Self {
             stack: vec![],
             externs: vec![],
             functions: init_func,
-            function_signatures: init_func_sig,
             data: vec![],
         }
     }
@@ -205,6 +211,7 @@ impl Generator {
         self.functions
             .get_mut(function)
             .ok_or("Unknown function called `{function}`")?
+            .body
             .extend(iter);
 
         Ok(())
@@ -214,6 +221,7 @@ impl Generator {
         self.functions
             .get_mut(function)
             .ok_or("Unknown function called `{function}`")?
+            .body
             .push(item);
 
         Ok(())
@@ -449,9 +457,10 @@ impl Generator {
         };
 
         let func_signature = self
-            .function_signatures
+            .functions
             .get(func)
             .ok_or(format!("Function `{func}` has no type signature"))?
+            .signature
             .clone();
 
         let mut node_types = vec![];
@@ -462,9 +471,9 @@ impl Generator {
         // Validate node types
 
         for (index, node_type) in node_types.iter().enumerate() {
-            if index > func_signature.types.len() && !func_signature.additional_arguments {
+            if index > func_signature.types.len() && !func_signature.var_args {
                 return Err(format!("Too many arguments passed to function `{func}`"));
-            } else if !func_signature.additional_arguments {
+            } else if !func_signature.var_args {
                 let expected_type = &func_signature.types[index + 1];
 
                 if node_type != expected_type {
@@ -563,9 +572,10 @@ impl Generator {
 
         self.extend_fn(function, call_func)?;
 
-        self.function_signatures
+        self.functions
             .get(func)
             .ok_or("No function called `{func}`".to_string())?
+            .signature
             .types
             .get(0)
             .cloned()
@@ -595,9 +605,10 @@ impl Generator {
                     },
                     "extern" | "define" => Ok(Void),
                     _ => self
-                        .function_signatures
+                        .functions
                         .get(ident)
                         .ok_or(format!("Unknown function called `{ident}`"))?
+                        .signature
                         .types
                         .get(0)
                         .ok_or(format!("Function `{ident}` specifies no return type"))
@@ -612,10 +623,7 @@ impl Generator {
         match node {
             Node::Ident(ident) => match self.get_variable(ident) {
                 Some((address, t)) => {
-                    self.functions
-                        .get_mut(function)
-                        .ok_or(format!("Unknown function called `{function}`"))?
-                        .push(Lea(RAX, address));
+                    self.push_fn(function, Lea(RAX, address))?;
                     Ok(Type::Pointer(Box::new(t)))
                 }
                 None => Err(format!("Unkown identifier `{ident}`")),
@@ -639,26 +647,21 @@ impl Generator {
                 }
             }
 
-            let mut signature = FuncSignature {
-                types: vec![],
-                additional_arguments: false,
-            };
+            let (mut types, mut var_args) = (vec![], false);
 
             if let Some("...") = buffer.last().map(|x| x.as_str()) {
                 buffer.pop();
-                signature.additional_arguments = true;
+                var_args = true;
             }
 
             for ident in buffer {
-                signature
-                    .types
-                    .push(Type::try_from(ident.as_str()).unwrap());
+                types.push(Type::try_from(ident.as_str()).unwrap());
             }
 
             self.externs.push(ident.to_string());
 
-            self.function_signatures
-                .insert(ident.to_string(), signature);
+            self.functions
+                .insert(ident.to_string(), Function::new(types, var_args));
 
             Ok(Void)
         } else {
@@ -668,7 +671,8 @@ impl Generator {
 
     fn handle_function(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
         if let Some(Node::Ident(fn_name)) = nodes.get(1) {
-            self.functions.insert(fn_name.to_string(), vec![]);
+            self.functions
+                .insert(fn_name.to_string(), Function::new(vec![Void], false));
             let (mut signature_nodes, arguments) = if let Some(Node::Bracket(nodes)) = nodes.get(2)
             {
                 nodes
@@ -699,8 +703,10 @@ impl Generator {
                 },
             );
 
-            self.function_signatures
-                .insert(fn_name.to_string(), signature_nodes);
+            self.functions
+                .get_mut(fn_name)
+                .ok_or(format!("Unkown function called `{function}`"))?
+                .signature = signature_nodes;
 
             self.stack.push(Stack::BasePointer);
 
@@ -808,10 +814,12 @@ impl Generator {
         }
 
         let main_instrs = self.functions.remove("main").unwrap();
-        buffer.extend(export_function("main", &main_instrs));
+        buffer.extend(export_function("main", &main_instrs.body));
 
         for (key, value) in &self.functions {
-            buffer.extend(export_function(key, value));
+            if !self.externs.contains(key) {
+                buffer.extend(export_function(key, &value.body));
+            }
         }
 
         buffer.extend(b"\nsection .data\n");
