@@ -1,5 +1,5 @@
-use crate::code_gen::{Literal, Node, Type};
 use crate::lexer::Token;
+use crate::{Literal, Node, Type};
 
 pub fn encapsulate(tokens: &mut Vec<Token>, start: Token, end: Token) -> Result<Node, String> {
     // Assumes the last token was the start token
