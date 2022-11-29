@@ -72,6 +72,12 @@ impl FuncSignature {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Macro {
+    signature: Vec<String>,
+    body: Vec<Node>,
+}
+
 impl From<&Literal> for Type {
     fn from(literal: &Literal) -> Self {
         match literal {

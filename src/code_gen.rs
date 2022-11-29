@@ -9,6 +9,7 @@ pub struct Generator {
     stack: Vec<Stack>,
     externs: Vec<String>,
     functions: HashMap<String, Function>,
+    macros: HashMap<String, Macro>,
     data: Vec<String>,
 }
 
@@ -24,6 +25,7 @@ impl Default for Generator {
             stack: vec![],
             externs: vec![],
             functions: init_func,
+            macros: HashMap::new(),
             data: vec![],
         }
     }
@@ -421,6 +423,33 @@ impl Generator {
             .ok_or("Function `{func}` has no return type".to_string())
     }
 
+    fn register_macro(
+        &mut self,
+        name: String,
+        parameters: Vec<Node>,
+        body: Vec<Node>,
+    ) -> Result<(), String> {
+        let mut parameter_idents: Vec<String> = vec![];
+
+        for param in parameters {
+            if let Node::Ident(ident) = param {
+                parameter_idents.push(ident);
+            } else {
+                return Err("Macro parameter must be an ident".to_string());
+            }
+        }
+
+        self.macros.insert(
+            name,
+            Macro {
+                signature: parameter_idents,
+                body,
+            },
+        );
+
+        Ok(())
+    }
+
     fn node_type(&self, node: &Node) -> Result<Type, String> {
         match node {
             Node::Literal(literal) => Ok(Type::from(literal)),
@@ -442,7 +471,7 @@ impl Generator {
                         }
                         _ => todo!(),
                     },
-                    "extern" | "define" => Ok(Void),
+                    "extern" | "define" | "macro" | "fn" => Ok(Void),
                     _ => self
                         .functions
                         .get(ident)
@@ -627,6 +656,28 @@ impl Generator {
                                 .ok_or("Define expects 2 parameters".to_string())?
                                 .clone(),
                         )
+                    }
+                    "macro" => {
+                        let name = if let Node::Ident(name) =
+                            nodes.get(1).ok_or("Macro expects a name")?
+                        {
+                            name.to_string()
+                        } else {
+                            return Err("The name must be a valid idenifier".to_string());
+                        };
+
+                        let parameters = if let Node::Bracket(parameters) =
+                            nodes.get(2).ok_or("Macro expects a list of parameters")?
+                        {
+                            parameters.to_vec()
+                        } else {
+                            return Err("The name must be a valid idenifier".to_string());
+                        };
+
+                        let body = nodes[3..].to_vec();
+
+                        self.register_macro(name, parameters, body)?;
+                        Ok(Void)
                     }
                     "extern" => self.handle_extern(nodes),
                     "fn" => self.handle_function(function, nodes),
