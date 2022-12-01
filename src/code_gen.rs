@@ -287,20 +287,19 @@ impl Generator {
         Ok(Void)
     }
 
-    fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
+    fn handle_func(
+        &mut self,
+        function: &String,
+        name: &String,
+        nodes: &Vec<Node>,
+    ) -> Result<Type, String> {
         // Get function infomation
 
         let mut parameter_address = vec![];
-        let func = if let Some(Node::Ident(func)) = nodes.get(0) {
-            func
-        } else {
-            return Err("Could not find a function to call".to_string());
-        };
-
         let func_signature = self
             .functions
-            .get(func)
-            .ok_or(format!("Function `{func}` has no type signature"))?
+            .get(name)
+            .ok_or(format!("Function `{name}` has no type signature"))?
             .signature
             .clone();
 
@@ -313,13 +312,13 @@ impl Generator {
 
         for (index, node_type) in node_types.iter().enumerate() {
             if index > func_signature.types.len() && !func_signature.var_args {
-                return Err(format!("Too many arguments passed to function `{func}`"));
+                return Err(format!("Too many arguments passed to function `{name}`"));
             } else if !func_signature.var_args {
                 let expected_type = &func_signature.types[index + 1];
 
                 if node_type != expected_type {
                     return Err(format!(
-                        "In a call to {func} expected a {:?} but got a {:?}",
+                        "In a call to {name} expected a {:?} but got a {:?}",
                         expected_type, node_type
                     ));
                 }
@@ -402,7 +401,7 @@ impl Generator {
                 .ok_or("Parameter address and scope stack out of sync".to_string())?;
         }
 
-        let mut call_func = vec![NullReg(RAX), Call(func.to_string())];
+        let mut call_func = vec![NullReg(RAX), Call(name.to_string())];
 
         if let Some(Stack::Allocation(n)) = self.stack.last() {
             call_func.push(Add(RSP, Value(n.to_string())));
@@ -414,13 +413,61 @@ impl Generator {
         self.extend_fn(function, call_func)?;
 
         self.functions
-            .get(func)
-            .ok_or("No function called `{func}`".to_string())?
+            .get(name)
+            .ok_or(format!("No function called `{name}`"))?
             .signature
             .types
             .get(0)
             .cloned()
-            .ok_or("Function `{func}` has no return type".to_string())
+            .ok_or(format!("Function `{name}` has no return type"))
+    }
+
+    fn handle_macro(
+        &mut self,
+        function: &String,
+        name: &String,
+        nodes: &Vec<Node>,
+    ) -> Result<Type, String> {
+        let ape_macro = self.macros.get(name).unwrap();
+
+        if ape_macro.signature.len() != nodes.len() - 1 {
+            println!("{:?}\n{:?}", ape_macro, nodes);
+
+            return Err(format!(
+                "An incorrect number of parameters have been provided for the {name} macro"
+            ));
+        }
+
+        let mut ident_node_translation = HashMap::new();
+        for (ident, node) in ape_macro.signature.iter().zip(&nodes[1..]) {
+            ident_node_translation.insert(ident, node.clone());
+        }
+
+        let mut t = Void;
+
+        for node in replace_ident(ident_node_translation, ape_macro.body.clone()) {
+            t = self.consume_node(function, node)?;
+        }
+
+        Ok(t)
+    }
+
+    fn handle_call(&mut self, function: &String, nodes: Vec<Node>) -> Result<Type, String> {
+        // Get function infomation
+
+        let func = if let Some(Node::Ident(func)) = nodes.get(0) {
+            func
+        } else {
+            return Err("Could not find a function to call".to_string());
+        };
+
+        if self.macros.contains_key(func) {
+            self.handle_macro(function, &func, &nodes)
+        } else if self.functions.contains_key(func) {
+            self.handle_func(function, &func, &nodes)
+        } else {
+            Err(format!("Unkown ident {func}"))
+        }
     }
 
     fn register_macro(

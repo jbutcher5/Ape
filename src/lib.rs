@@ -3,6 +3,8 @@ pub mod code_gen;
 pub mod lexer;
 pub mod parser;
 
+use std::collections::HashMap;
+
 use asm::{Register::*, *};
 use Type::*;
 
@@ -171,4 +173,24 @@ pub fn func_param_stack_alloc(parameters: &Vec<Type>) -> u64 {
         let stack_params = &parameters[7..];
         stack_params.iter().map(Type::byte_size).sum()
     }
+}
+
+pub fn replace_ident(ident_map: HashMap<&String, Node>, nodes: Vec<Node>) -> Vec<Node> {
+    let mut result = vec![];
+
+    for node in nodes {
+        result.push(match node {
+            Node::Ident(ref ident) => {
+                if let Some(node) = ident_map.get(&ident) {
+                    node.clone()
+                } else {
+                    node.clone()
+                }
+            }
+            Node::TypedIdent(..) | Node::Literal(_) => node,
+            Node::Bracket(nodes) => Node::Bracket(replace_ident(ident_map.clone(), nodes)),
+        })
+    }
+
+    result
 }
