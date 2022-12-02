@@ -76,7 +76,7 @@ impl FuncSignature {
 
 #[derive(Debug, Clone)]
 pub struct Macro {
-    signature: Vec<String>,
+    pattern: Node,
     body: Vec<Node>,
 }
 
@@ -172,6 +172,34 @@ pub fn func_param_stack_alloc(parameters: &Vec<Type>) -> u64 {
     } else {
         let stack_params = &parameters[7..];
         stack_params.iter().map(Type::byte_size).sum()
+    }
+}
+
+pub fn match_macro_pattern(pattern: &Node, node: &Node) -> Option<HashMap<String, Node>> {
+    let mut ident_to_node: HashMap<String, Node> = HashMap::new();
+
+    match (pattern, node) {
+        (Node::Literal(_), Node::Literal(_)) => Some(ident_to_node),
+        (Node::Bracket(pattern_inner), Node::Bracket(node_inner)) => {
+            for (pattern, node) in pattern_inner.into_iter().zip(node_inner) {
+                ident_to_node.extend(match_macro_pattern(pattern, node)?);
+            }
+
+            Some(ident_to_node)
+        }
+        (Node::Ident(x), y) => {
+            if x.ends_with("!") {
+                return Some(ident_to_node);
+            }
+
+            if let Node::Ident(_) = y {
+                ident_to_node.insert(x.to_string(), y.clone());
+                Some(ident_to_node)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
