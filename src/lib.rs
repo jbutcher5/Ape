@@ -188,35 +188,35 @@ pub fn match_macro_pattern(pattern: &Node, node: &Node) -> Option<HashMap<String
             Some(ident_to_node)
         }
         (Node::Ident(x), y) => {
-            if x.ends_with("!") {
-                return Some(ident_to_node);
+            if let Node::Ident(y) = y {
+                if x.ends_with("!") && x == y {
+                    return Some(ident_to_node);
+                } else {
+                    return None;
+                }
             }
 
-            if let Node::Ident(_) = y {
-                ident_to_node.insert(x.to_string(), y.clone());
-                Some(ident_to_node)
-            } else {
-                None
-            }
+            ident_to_node.insert(x.to_string(), y.clone());
+            Some(ident_to_node)
         }
         _ => None,
     }
 }
 
-pub fn replace_ident(ident_map: HashMap<&String, Node>, nodes: Vec<Node>) -> Vec<Node> {
+pub fn replace_ident(ident_map: &HashMap<String, Node>, nodes: Vec<Node>) -> Vec<Node> {
     let mut result = vec![];
 
     for node in nodes {
         result.push(match node {
             Node::Ident(ref ident) => {
-                if let Some(node) = ident_map.get(&ident) {
+                if let Some(node) = ident_map.get(ident) {
                     node.clone()
                 } else {
                     node.clone()
                 }
             }
             Node::TypedIdent(..) | Node::Literal(_) => node,
-            Node::Bracket(nodes) => Node::Bracket(replace_ident(ident_map.clone(), nodes)),
+            Node::Bracket(nodes) => Node::Bracket(replace_ident(ident_map, nodes)),
         })
     }
 

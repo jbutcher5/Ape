@@ -4,7 +4,7 @@
 (extern element Int &Int Int)
 (extern add Int Int Int)
 
-(macro puts [s]
+(macro (puts! s)
     (printf "%s\n" s))
 
 (fn f [x: Int y: Int] Int
@@ -14,6 +14,6 @@
     (define x #(1 123 2))
     (printf "%d %d %d\n" (f (element x 0) (element x 1)) (element x 1) (element x 2))
 
-    (puts "Hello, World!")
+    (puts! "Hello, World!")
 
     (exit 0))
