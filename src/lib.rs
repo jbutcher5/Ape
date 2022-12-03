@@ -189,7 +189,11 @@ pub fn match_macro_pattern(pattern: &Node, node: &Node) -> Option<HashMap<String
         }
         (Node::Ident(x), y) => {
             if let Node::Ident(y) = y {
-                if x.ends_with("!") && x == y {
+                if !x.ends_with("!") {
+                    ident_to_node.insert(x.to_string(), Node::Ident(y.to_string()));
+                    return Some(ident_to_node);
+                } else if x == y {
+                    ident_to_node.insert(x.to_string(), Node::Ident(y.to_string()));
                     return Some(ident_to_node);
                 } else {
                     return None;

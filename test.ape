@@ -7,6 +7,9 @@
 (macro (puts! s)
     (printf "%s\n" s))
 
+(macro (swap! (x y))
+    (y x))
+
 (fn f [x: Int y: Int] Int
     (add x y))
 
@@ -15,5 +18,6 @@
     (printf "%d %d %d\n" (f (element x 0) (element x 1)) (element x 1) (element x 2))
 
     (puts! "Hello, World!")
+    (swap! ("test" puts!))
 
     (exit 0))
